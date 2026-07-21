@@ -147,6 +147,8 @@ const BASE_STATS = Object.freeze({
   heatBonusMul: 1,            // 熱による強化幅の倍率
   overclockDuration: 0,       // 超強化状態の延長秒数
   overheatReduction: 0,       // 弱体化時間の短縮秒数
+  masteryPowerMul: 0,         // Mastery による超強化の上乗せ
+  superOverclock: 0,          // 1 で SUPER OVERCLOCK が解放される
   // 属性コア（第8段階）
   elementPower: 1,            // 属性効果の倍率
 });
@@ -614,6 +616,7 @@ const UPGRADES = [
   {
     id: 'heatBonus', name: 'Heat Amplifier', category: 'attack',
     tier: 3,
+    unlockWave: 100,
     level: 0, maxLevel: 60, baseCost: 900, growth: 1.24,
     description: '熱による強化幅が増加する',
     effect(s, lv) { s.heatBonusMul += lv * 0.05; },
@@ -622,6 +625,7 @@ const UPGRADES = [
   {
     id: 'heatGain', name: 'Heat Generator', category: 'attack',
     tier: 4,
+    unlockWave: 0,
     level: 0, maxLevel: 40, baseCost: 2500, growth: 1.28,
     description: '発熱量が増えオーバークロックしやすくなる',
     effect(s, lv) { s.heatGainMul += lv * 0.05; },
@@ -630,6 +634,7 @@ const UPGRADES = [
   {
     id: 'overclockDuration', name: 'Overclock Duration', category: 'attack',
     tier: 5,
+    unlockWave: 250,
     level: 0, maxLevel: 40, baseCost: 30000, growth: 1.32,
     description: 'オーバークロックの持続時間が延びる',
     effect(s, lv) { s.overclockDuration += lv * 0.25; },
@@ -638,6 +643,7 @@ const UPGRADES = [
   {
     id: 'overheatReduction', name: 'Coolant Purge', category: 'defense',
     tier: 5,
+    unlockWave: 500,
     level: 0, maxLevel: 30, baseCost: 30000, growth: 1.32,
     description: 'オーバーヒートの時間が短縮される',
     effect(s, lv) { s.overheatReduction += lv * 0.1; },
@@ -646,6 +652,7 @@ const UPGRADES = [
   {
     id: 'elementPower', name: 'Element Amplifier', category: 'special',
     tier: 6,
+    unlockWave: 750,
     level: 0, maxLevel: 60, baseCost: 200000, growth: 1.30,
     description: '属性コアの効果が増幅される',
     effect(s, lv) { s.elementPower += lv * 0.05; },
@@ -828,6 +835,22 @@ const RESEARCH = [
     valueText: (lv) => 'ボス与ダメ +' + (lv * 5) + '%',
   },
   {
+    id: 'overclockMastery', name: 'Overclock Mastery', tier: 8, unlockWave: 750,
+    level: 0, maxLevel: 5,
+    baseCost: 400, growth: 3.0,
+    description: 'オーバークロックを段階的に進化させる（Lv5でSUPER解放）',
+    effect(s, lv) {
+      if (lv >= 2) s.masteryPowerMul += 0.25;
+      if (lv >= 3) s.overclockDuration += 3;
+      if (lv >= 4) s.overheatReduction += 1.5;
+      if (lv >= 5) s.superOverclock = 1;
+    },
+    valueText: (lv) => {
+      const t = ['未研究', '基本', '倍率アップ', '持続延長', 'ヒート短縮', 'SUPER解放'];
+      return 'Lv' + lv + ' ' + t[Math.min(lv, 5)];
+    },
+  },
+  {
     id: 'enemySlow', name: '重力干渉', tier: 9, level: 0, maxLevel: 30,
     baseCost: 20, growth: 1.30, description: '敵全体の移動速度を低下',
     effect(s, lv) { s.enemySpeedMul -= lv * 0.01; },
@@ -872,15 +895,16 @@ const LAB_SPEEDUP_SECONDS_PER_GEM = 600;
 
 /** 高Wave到達で得られるGem。到達済みの節目は meta.gemMilestones に記録される */
 const GEM_MILESTONES = [
-  { wave: 25, gem: 2 },
-  { wave: 50, gem: 5 },
-  { wave: 100, gem: 12 },
-  { wave: 200, gem: 30 },
-  { wave: 400, gem: 70 },
-  { wave: 600, gem: 120 },
-  { wave: 800, gem: 200 },
-  { wave: 1000, gem: 350 },
-  { wave: 1500, gem: 700 },
+  { wave: 10, gem: 0, frag: 1 },
+  { wave: 25, gem: 2, frag: 1 },
+  { wave: 50, gem: 5, frag: 2 },
+  { wave: 100, gem: 12, frag: 3 },
+  { wave: 200, gem: 30, frag: 4 },
+  { wave: 400, gem: 70, frag: 6 },
+  { wave: 600, gem: 120, frag: 8 },
+  { wave: 800, gem: 200, frag: 10 },
+  { wave: 1000, gem: 350, frag: 14 },
+  { wave: 1500, gem: 700, frag: 20 },
 ];
 
 /**
@@ -1052,87 +1076,304 @@ const LAB_CATEGORIES = [
  *   passive : 毎フレームの効果（引き寄せ等）
  * 追加する場合はこの配列へオブジェクトを1つ足すだけでよい。
  */
+/**
+ * 属性コア。解放条件・熟練度・専用研究まで含めてこの配列で完結する。
+ *   unlockWave : 最高到達Waveがこの値に達すると解放
+ *   expTable   : 各レベルに必要な累計撃破数
+ *   baseParams : 効果の基準値。レベル特典と専用研究がこれを倍率で書き換える
+ *   levelPerks : index が到達レベル。mul は倍率、set は上書き
+ *   research   : 専用研究（Coinで購入する即時強化）
+ * 新しい属性はこの配列へ1つ追加するだけでUI・研究・解放判定へ反映される。
+ */
+const ELEMENT_EXP_TABLE = [0, 1000, 5000, 20000, 100000];
+
+/**
+ * 属性の解放費用（Core Fragment）。
+ * 何番目に解放するかで決まるので、どの属性を先に取るかは自由。
+ * 属性を増やす場合はこの配列の末尾へ追加する。
+ */
+const ELEMENT_UNLOCK_COSTS = [3, 5, 8, 12, 18];
+
+/** 属性レベルアップの費用（Lv1→2, 2→3, 3→4, 4→5）の既定値 */
+const DEFAULT_LEVEL_COST = [2, 4, 7, 10];
+
+/**
+ * 進行状況に応じたおすすめ属性。上から順に条件を満たす最初のものを表示する。
+ * 強制ではなくガイドとしての提示。
+ */
+const ELEMENT_RECOMMENDATIONS = [
+  {
+    minWave: 300, id: 'gravity',
+    reasons: ['ビルドの幅が広がり、高難度攻略に向く', '敵を集めて範囲攻撃と噛み合う'],
+  },
+  {
+    minWave: 100, id: 'thunder',
+    reasons: ['敵数が増えてくるため連鎖攻撃が強力', 'スタンで押し込まれにくくなる'],
+  },
+  {
+    minWave: 0, id: 'fire',
+    reasons: ['敵を倒しやすい', '序盤攻略が安定する'],
+  },
+  // 上位候補を既に解放している場合の予備候補
+  {
+    minWave: 0, id: 'ice',
+    reasons: ['減速と凍結で被弾を減らせる', '安定して長く粘りたい場合に有効'],
+  },
+  {
+    minWave: 0, id: 'economy',
+    reasons: ['CashとCoinが大きく増える', '研究やLABの進みを早めたい場合に'],
+  },
+  {
+    minWave: 0, id: 'thunder',
+    reasons: ['敵が多いほど連鎖が活きる', 'スタンで足止めできる'],
+  },
+  {
+    minWave: 0, id: 'gravity',
+    reasons: ['敵を密集させて範囲攻撃と噛み合う', 'ビルド次第で伸びしろが大きい'],
+  },
+];
+
 const ELEMENTS = [
   {
     id: 'none', name: 'ニュートラル', icon: '◇', color: '#9fb4c7',
     tagline: '癖のない標準構成',
-    desc: '特殊効果はないが、攻撃力とHPがわずかに高い。',
-    stats(s, p) { s.damageMul += 0.05 * p; s.hpMul += 0.05 * p; },
-    effectText: (p) => 'ダメージ +' + (5 * p).toFixed(0) + '% / HP +' + (5 * p).toFixed(0) + '%',
+    desc: '特殊効果はないが、攻撃力とHPが安定して伸びる。',
+    levelCost: [2, 4, 7, 10],
+    rating: 5, archetype: 'バランス型',
+    guide: '攻撃・防御・経済をバランス良く強化。迷ったらまずはこちら。',
+    tooltip: {
+      merit: ['癖がなく、どの構成にも噛み合う', '解放不要で最初から使える', 'レベルを上げると攻撃とHPが素直に伸びる'],
+      demerit: ['特殊効果がないため派手な殲滅力はない', '高Waveでは他属性の伸びに置いていかれやすい'],
+      weapons: ['汎用型の究極武器（今後実装）'],
+      drones: ['攻撃ドローン／回復ドローン（今後実装）'],
+    },
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: { atkBonus: 0.05, hpBonus: 0.05 },
+    levelPerks: [
+      null,
+      { text: '攻撃力ボーナス +40%', k: 'atkBonus', mul: 1.4 },
+      { text: 'HPボーナス +40%', k: 'hpBonus', mul: 1.4 },
+      { text: '攻撃力ボーナス +40%', k: 'atkBonus', mul: 1.4 },
+      { text: 'HPボーナス +40%', k: 'hpBonus', mul: 1.4 },
+    ],
+    research: [
+      { id: 'neuAtk', name: '基幹出力', k: 'atkBonus', per: 0.08,
+        maxLevel: 30, baseCost: 60, growth: 1.22, unit: '攻撃力' },
+      { id: 'neuHp', name: '基幹装甲', k: 'hpBonus', per: 0.08,
+        maxLevel: 30, baseCost: 60, growth: 1.22, unit: 'HP' },
+    ],
+    stats(s, p, P) {
+      s.damageMul += P.atkBonus * p;
+      s.hpMul += P.hpBonus * p;
+    },
+    effectText: (P, p) =>
+      'ダメージ +' + (P.atkBonus * p * 100).toFixed(0) + '% / HP +' +
+      (P.hpBonus * p * 100).toFixed(0) + '%',
   },
   {
     id: 'fire', name: '炎', icon: '✹', color: '#ff7a3d',
     tagline: '継続ダメージと爆発',
     desc: '命中した敵を燃焼させ、燃焼中の敵を倒すと周囲へ爆発が広がる。',
-    stats(s, p) { s.damageMul += 0.08 * p; },
-    onHit(game, enemy, dmg, p) {
-      // 燃焼を付与。既に燃えていれば強い方で上書きする
-      const dps = dmg * 0.35 * p;
-      if (dps > enemy.burnDps) enemy.burnDps = dps;
-      enemy.burnTimer = Math.max(enemy.burnTimer, 3.0);
+    levelCost: [2, 4, 7, 10],
+    rating: 4, archetype: '火力特化',
+    guide: '継続ダメージと爆発で大量の敵を一掃。初心者にも扱いやすい攻撃型。',
+    tooltip: {
+      merit: ['燃焼が重なるほど雑魚処理が速い', '撃破時の爆発が連鎖して群れを一掃できる', '単純に攻撃力も上がる'],
+      demerit: ['単体のボスには燃焼以外の恩恵が薄い', '爆発が起きるまでのラグがある'],
+      weapons: ['範囲攻撃系の究極武器（今後実装）'],
+      drones: ['攻撃ドローン（今後実装）'],
     },
-    onKill(game, enemy, p) {
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: { burnDuration: 3.0, burnDps: 0.35, blastRadius: 70, blastDamage: 0.12 },
+    levelPerks: [
+      null,
+      { text: '燃焼時間 +10%', k: 'burnDuration', mul: 1.10 },
+      { text: '燃焼ダメージ +20%', k: 'burnDps', mul: 1.20 },
+      { text: '爆発範囲 +20%', k: 'blastRadius', mul: 1.20 },
+      { text: '爆発ダメージ +30%', k: 'blastDamage', mul: 1.30 },
+    ],
+    research: [
+      { id: 'fireDur', name: '燃焼持続', k: 'burnDuration', per: 0.05,
+        maxLevel: 40, baseCost: 120, growth: 1.24, unit: '燃焼時間' },
+      { id: 'fireDps', name: '火力増幅', k: 'burnDps', per: 0.06,
+        maxLevel: 50, baseCost: 150, growth: 1.24, unit: '燃焼ダメージ' },
+      { id: 'fireRadius', name: '爆風拡張', k: 'blastRadius', per: 0.04,
+        maxLevel: 40, baseCost: 180, growth: 1.26, unit: '爆発範囲' },
+      { id: 'fireBlast', name: '爆裂弾頭', k: 'blastDamage', per: 0.07,
+        maxLevel: 50, baseCost: 220, growth: 1.26, unit: '爆発ダメージ' },
+    ],
+    stats(s, p) { s.damageMul += 0.08 * p; },
+    onHit(game, enemy, dmg, p, P) {
+      const dps = dmg * P.burnDps * p;
+      if (dps > enemy.burnDps) enemy.burnDps = dps;
+      enemy.burnTimer = Math.max(enemy.burnTimer, P.burnDuration);
+    },
+    onKill(game, enemy, p, P) {
       if (enemy.burnTimer <= 0) return;
       enemy.burnTimer = 0;   // 同じ敵から二重に爆発しないようにする
-      const radius = 55 + 25 * p;
-      game.explode(enemy.x, enemy.y, radius, enemy.maxHp * 0.12 * p, '#ff7a3d');
+      game.explode(
+        enemy.x, enemy.y,
+        P.blastRadius * (0.8 + 0.2 * p),
+        enemy.maxHp * P.blastDamage * p,
+        '#ff7a3d'
+      );
     },
-    effectText: (p) => '燃焼 与ダメの' + (35 * p).toFixed(0) + '%/秒 ・ 撃破時に爆発',
+    effectText: (P, p) =>
+      '燃焼 ' + (P.burnDps * p * 100).toFixed(0) + '%/秒 × ' +
+      P.burnDuration.toFixed(1) + '秒 ・ 爆発 半径' + P.blastRadius.toFixed(0),
   },
   {
     id: 'thunder', name: '雷', icon: '⚡', color: '#ffe14d',
     tagline: '連鎖攻撃とスタン',
     desc: '一定確率で近くの敵へ電撃が連鎖し、当たった敵を短時間動けなくする。',
+    levelCost: [2, 5, 8, 12],
+    rating: 4, archetype: '連鎖殲滅',
+    guide: '攻撃が複数の敵へ連鎖し、スタンで足止めも可能。敵数が多いほど真価を発揮する。',
+    tooltip: {
+      merit: ['1発で複数の敵を巻き込める', 'スタンでコアへの到達を遅らせられる', 'クリティカル率も上がる'],
+      demerit: ['敵が散らばっていると連鎖しにくい', '発生が確率依存で安定しない'],
+      weapons: ['多段ヒット系の究極武器（今後実装）'],
+      drones: ['デバフドローン（今後実装）'],
+    },
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: {
+      chainRange: 130, chainCount: 2, chainDamage: 0.5,
+      stunDuration: 0.35, chainChance: 0.25,
+    },
+    levelPerks: [
+      null,
+      { text: '連鎖距離 +15%', k: 'chainRange', mul: 1.15 },
+      { text: '追加連鎖 +1', k: 'chainCount', mul: 1.5 },
+      { text: 'スタン時間 +20%', k: 'stunDuration', mul: 1.20 },
+      { text: '連鎖ダメージ +30%', k: 'chainDamage', mul: 1.30 },
+    ],
+    research: [
+      { id: 'thnRange', name: '電導範囲', k: 'chainRange', per: 0.04,
+        maxLevel: 40, baseCost: 140, growth: 1.24, unit: '連鎖距離' },
+      { id: 'thnStun', name: '麻痺電流', k: 'stunDuration', per: 0.05,
+        maxLevel: 40, baseCost: 170, growth: 1.25, unit: 'スタン時間' },
+      { id: 'thnCount', name: '分岐回路', k: 'chainCount', per: 0.10,
+        maxLevel: 20, baseCost: 400, growth: 1.35, unit: '連鎖数' },
+      { id: 'thnDamage', name: '高電圧', k: 'chainDamage', per: 0.06,
+        maxLevel: 50, baseCost: 200, growth: 1.25, unit: '連鎖ダメージ' },
+      { id: 'thnChance', name: '放電頻度', k: 'chainChance', per: 0.04,
+        maxLevel: 30, baseCost: 300, growth: 1.30, unit: '連鎖率' },
+    ],
     stats(s, p) { s.critChance += 0.05 * p; },
-    onHit(game, enemy, dmg, p) {
-      if (Math.random() > 0.25 * p) return;
-      // 近傍の敵へ連鎖
-      const range = 130;
-      const rSq = range * range;
+    onHit(game, enemy, dmg, p, P) {
+      if (Math.random() > Math.min(P.chainChance * p, 0.9)) return;
+      const rSq = P.chainRange * P.chainRange;
+      const limit = Math.floor(P.chainCount + p - 1);
       let chained = 0;
-      const limit = 2 + Math.floor(p);
       for (let i = 0; i < game.enemies.length && chained < limit; i++) {
         const e = game.enemies[i];
-        if (e === enemy || e.hp <= 0) continue;
+        if (!e || e === enemy || e.hp <= 0) continue;
         const dx = e.x - enemy.x;
         const dy = e.y - enemy.y;
         if (dx * dx + dy * dy > rSq) continue;
-        game.damageEnemy(e, dmg * 0.5 * p, 0, true);
-        e.stunTimer = Math.max(e.stunTimer, 0.5 * p);
+        game.damageEnemy(e, dmg * P.chainDamage * p, 0, true);
+        e.stunTimer = Math.max(e.stunTimer, P.stunDuration * p);
         game.spawnLightning(enemy.x, enemy.y, e.x, e.y);
         chained++;
       }
-      enemy.stunTimer = Math.max(enemy.stunTimer, 0.35 * p);
+      enemy.stunTimer = Math.max(enemy.stunTimer, P.stunDuration * p);
     },
-    effectText: (p) => (25 * p).toFixed(0) + '%で連鎖 ・ スタン ' + (0.35 * p).toFixed(2) + '秒',
+    effectText: (P, p) =>
+      (Math.min(P.chainChance * p, 0.9) * 100).toFixed(0) + '%で ' +
+      Math.floor(P.chainCount + p - 1) + '体へ連鎖 ・ スタン ' +
+      (P.stunDuration * p).toFixed(2) + '秒',
   },
   {
     id: 'ice', name: '氷', icon: '❄', color: '#7fd8ff',
     tagline: '減速と凍結',
     desc: '命中した敵の移動速度を下げ、重ねがけすると完全に凍結させる。',
+    levelCost: [2, 4, 7, 10],
+    rating: 3, archetype: '安全重視',
+    guide: '敵を減速・凍結させて生存率を高める。安定攻略向け。',
+    tooltip: {
+      merit: ['被弾そのものを減らせる', '凍結中は大ダメージを与えられる', 'クリティカル倍率も上がる'],
+      demerit: ['与ダメージが直接は増えない', '効果が出るまで数発当てる必要がある'],
+      weapons: ['状態異常強化系の究極武器（今後実装）'],
+      drones: ['シールドドローン（今後実装）'],
+    },
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: {
+      chillPerHit: 0.12, slowMax: 0.8, freezeDuration: 1.2, freezeDamage: 1.0,
+    },
+    levelPerks: [
+      null,
+      { text: '減速量 +10%', k: 'slowMax', mul: 1.10 },
+      { text: '凍結時間 +15%', k: 'freezeDuration', mul: 1.15 },
+      { text: '凍結に必要なヒット数が減少', k: 'chillPerHit', mul: 1.5 },
+      { text: '凍結中の被ダメージ +25%', k: 'freezeDamage', mul: 1.25 },
+    ],
+    research: [
+      { id: 'iceSlow', name: '冷却効率', k: 'chillPerHit', per: 0.06,
+        maxLevel: 40, baseCost: 150, growth: 1.24, unit: '蓄積速度' },
+      { id: 'iceFreeze', name: '凍結持続', k: 'freezeDuration', per: 0.05,
+        maxLevel: 40, baseCost: 180, growth: 1.25, unit: '凍結時間' },
+      { id: 'iceDepth', name: '絶対零度', k: 'slowMax', per: 0.02,
+        maxLevel: 20, baseCost: 350, growth: 1.32, unit: '減速上限' },
+      { id: 'iceShatter', name: '砕氷弾', k: 'freezeDamage', per: 0.05,
+        maxLevel: 50, baseCost: 250, growth: 1.26, unit: '凍結中ダメージ' },
+    ],
     stats(s, p) { s.critMultiplier += 0.15 * p; },
-    onHit(game, enemy, dmg, p) {
-      enemy.chill = Math.min(enemy.chill + 0.12 * p, 1);
+    onHit(game, enemy, dmg, p, P) {
+      enemy.chill = Math.min(enemy.chill + P.chillPerHit * p, 1);
       enemy.chillTimer = 2.5;
+      enemy.slowMax = Math.min(P.slowMax, 0.92);
       if (enemy.chill >= 1 && enemy.freezeCd <= 0) {
         enemy.freezeCd = 6;
-        enemy.stunTimer = Math.max(enemy.stunTimer, 1.2 * p);
+        enemy.stunTimer = Math.max(enemy.stunTimer, P.freezeDuration * p);
+        enemy.frozenBonus = P.freezeDamage;
         enemy.chill = 0;
         game.spawnParticles(enemy.x, enemy.y, 10, 120, 0.4, 3, '#7fd8ff');
       }
     },
-    effectText: (p) => '最大 ' + Math.min(60 * p, 80).toFixed(0) + '% 減速 ・ 蓄積で凍結',
+    effectText: (P, p) =>
+      '最大 ' + (Math.min(P.slowMax, 0.92) * 100).toFixed(0) + '% 減速 ・ 凍結 ' +
+      (P.freezeDuration * p).toFixed(2) + '秒 ・ 凍結中 ×' + P.freezeDamage.toFixed(2),
   },
   {
     id: 'gravity', name: '重力', icon: '◉', color: '#a561ff',
     tagline: '引き寄せと集束',
     desc: '敵を中心へ引き寄せて密集させ、密集した敵ほど受けるダメージが増える。',
+    levelCost: [3, 5, 9, 14],
+    rating: 5, archetype: 'テクニカル',
+    guide: '敵を集めて他スキルとのシナジーを狙う。ビルド次第で非常に強力な上級者向け。',
+    tooltip: {
+      merit: ['敵が密集するほどダメージが伸びる', 'オーブ・地雷・爆発と極めて相性が良い', 'Lv5でブラックホールが発生する'],
+      demerit: ['敵を引き寄せるためコアへの圧力が上がる', '防御が薄いと一気に崩れる'],
+      weapons: ['範囲殲滅系の究極武器（今後実装）'],
+      drones: ['攻撃ドローン／シールドドローン（今後実装）'],
+    },
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: {
+      pullRadius: 90, pullForce: 26, clusterMul: 0.12, blackholeChance: 0,
+    },
+    levelPerks: [
+      null,
+      { text: '吸引範囲 +10%', k: 'pullRadius', mul: 1.10 },
+      { text: '吸引力 +20%', k: 'pullForce', mul: 1.20 },
+      { text: '密集ダメージ倍率 上昇', k: 'clusterMul', mul: 1.45 },
+      { text: '一定確率でブラックホール発生', k: 'blackholeChance', set: 0.04 },
+    ],
+    research: [
+      { id: 'grvRadius', name: '重力場拡張', k: 'pullRadius', per: 0.04,
+        maxLevel: 40, baseCost: 160, growth: 1.24, unit: '判定範囲' },
+      { id: 'grvForce', name: '重力増幅', k: 'pullForce', per: 0.06,
+        maxLevel: 40, baseCost: 190, growth: 1.25, unit: '吸引力' },
+      { id: 'grvDamage', name: '圧壊圧力', k: 'clusterMul', per: 0.06,
+        maxLevel: 50, baseCost: 240, growth: 1.26, unit: '密集ダメージ' },
+      { id: 'grvHole', name: '特異点生成', k: 'blackholeChance', per: 0.25,
+        maxLevel: 20, baseCost: 800, growth: 1.38, unit: 'ブラックホール率' },
+    ],
     stats(s, p) { s.range += 20 * p; },
-    passive(game, dt, p) {
-      // 射程の外側にいる敵をコアへ引き寄せる
-      const pull = 26 * p * dt;
+    passive(game, dt, p, P) {
+      const pull = P.pullForce * p * dt;
       for (let i = 0; i < game.enemies.length; i++) {
         const e = game.enemies[i];
+        if (!e) continue;
         const dx = game.cx - e.x;
         const dy = game.cy - e.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -1141,33 +1382,113 @@ const ELEMENTS = [
         e.y += (dy / d) * pull;
       }
     },
-    onHit(game, enemy, dmg, p) {
-      // 周囲の敵の数に応じて追加ダメージ
-      const rSq = 90 * 90;
+    onHit(game, enemy, dmg, p, P) {
+      const rSq = P.pullRadius * P.pullRadius;
       let near = 0;
       for (let i = 0; i < game.enemies.length; i++) {
         const e = game.enemies[i];
+        if (!e) continue;
         const dx = e.x - enemy.x;
         const dy = e.y - enemy.y;
         if (dx * dx + dy * dy <= rSq) near++;
       }
-      if (near <= 1) return;
-      game.damageEnemy(enemy, dmg * Math.min(near - 1, 6) * 0.12 * p, 0, false);
+      if (near > 1) {
+        game.damageEnemy(enemy, dmg * Math.min(near - 1, 6) * P.clusterMul * p, 0, false);
+      }
+      // 特異点: 周囲を強く引き寄せて大ダメージ
+      if (P.blackholeChance > 0 && Math.random() < P.blackholeChance) {
+        game.spawnBlackhole(enemy.x, enemy.y, P.pullRadius * 1.8, dmg * 3 * p);
+      }
     },
-    effectText: (p) => '引き寄せ ・ 密集で最大 +' + (72 * p).toFixed(0) + '% ダメージ',
+    effectText: (P, p) =>
+      '吸引力 ' + (P.pullForce * p).toFixed(0) + ' ・ 密集で最大 +' +
+      (P.clusterMul * 6 * p * 100).toFixed(0) + '%' +
+      (P.blackholeChance > 0
+        ? ' ・ 特異点 ' + (P.blackholeChance * 100).toFixed(1) + '%'
+        : ''),
   },
   {
     id: 'economy', name: '経済', icon: '$', color: '#3dff9e',
     tagline: '資源収集特化',
     desc: '戦闘能力は伸びないが、CashとCoinの獲得量が大きく増える。',
-    stats(s, p) {
-      s.cashBonus += 0.6 * p;
-      s.coinBonus += 0.3 * p;
+    levelCost: [2, 4, 7, 10],
+    rating: 2, archetype: '長期育成',
+    guide: '戦闘能力は低いがCash・Coin獲得量が増加。育成効率を重視したいプレイヤー向け。',
+    tooltip: {
+      merit: ['1周回あたりの収入が大きく増える', 'R&DやLABの進みが早くなる', 'Lv5で撃破時にGemを拾える'],
+      demerit: ['戦闘力がほぼ伸びず到達Waveは落ちる', '短期的な手応えは薄い'],
+      weapons: ['資源獲得系の究極武器（今後実装）'],
+      drones: ['採掘ドローン（今後実装）'],
+    },
+    expTable: ELEMENT_EXP_TABLE,
+    baseParams: {
+      cashBonus: 0.6, coinBonus: 0.3, bossReward: 1.0, gemOnKill: 0,
+    },
+    levelPerks: [
+      null,
+      { text: 'Cash +10%', k: 'cashBonus', mul: 1.10 },
+      { text: 'Coin +10%', k: 'coinBonus', mul: 1.10 },
+      { text: 'ボス報酬 +20%', k: 'bossReward', mul: 1.20 },
+      { text: '撃破時に確率でGem獲得', k: 'gemOnKill', set: 0.00008 },
+    ],
+    research: [
+      { id: 'ecoCash', name: '市場操作', k: 'cashBonus', per: 0.06,
+        maxLevel: 50, baseCost: 140, growth: 1.24, unit: 'Cash' },
+      { id: 'ecoCoin', name: '通貨供給', k: 'coinBonus', per: 0.06,
+        maxLevel: 50, baseCost: 200, growth: 1.26, unit: 'Coin' },
+      { id: 'ecoBoss', name: '戦利品鑑定', k: 'bossReward', per: 0.05,
+        maxLevel: 40, baseCost: 300, growth: 1.28, unit: 'ボス報酬' },
+      { id: 'ecoGem', name: '結晶抽出', k: 'gemOnKill', per: 0.30,
+        maxLevel: 25, baseCost: 900, growth: 1.40, unit: 'Gem獲得率' },
+    ],
+    stats(s, p, P) {
+      s.cashBonus += P.cashBonus * p;
+      s.coinBonus += P.coinBonus * p;
       s.interest += 0.02 * p;
     },
-    effectText: (p) => 'Cash +' + (60 * p).toFixed(0) + '% / Coin +' + (30 * p).toFixed(0) + '%',
+    onKill(game, enemy, p, P) {
+      if (P.gemOnKill > 0 && Math.random() < P.gemOnKill * p) {
+        game.addGem(1);
+        game.spawnParticles(enemy.x, enemy.y, 8, 140, 0.5, 3, '#ff2d95');
+      }
+    },
+    effectText: (P, p) =>
+      'Cash +' + (P.cashBonus * p * 100).toFixed(0) + '% / Coin +' +
+      (P.coinBonus * p * 100).toFixed(0) + '%' +
+      (P.gemOnKill > 0 ? ' ・ Gem ' + (P.gemOnKill * p * 100).toFixed(3) + '%' : ''),
   },
 ];
+
+/** 属性のレベルと専用研究を反映した効果値を返す */
+function elementParams(el, level, researchLevels) {
+  const P = Object.assign({}, el.baseParams);
+
+  // レベル特典（index 1 が Lv2 の特典）
+  for (let lv = 2; lv <= level; lv++) {
+    const perk = el.levelPerks[lv - 1];
+    if (!perk) continue;
+    if (perk.set !== undefined) P[perk.k] = perk.set;
+    else P[perk.k] *= perk.mul;
+  }
+
+  // 属性専用研究
+  const levels = researchLevels || {};
+  for (let i = 0; i < el.research.length; i++) {
+    const r = el.research[i];
+    const lv = levels[r.id] || 0;
+    if (lv > 0) P[r.k] *= 1 + r.per * lv;
+  }
+  return P;
+}
+
+/** 累計撃破数から属性レベル（1〜5）を求める */
+function elementLevelFromExp(el, exp) {
+  let lv = 1;
+  for (let i = 1; i < el.expTable.length; i++) {
+    if (exp >= el.expTable[i]) lv = i + 1;
+  }
+  return lv;
+}
 
 function elementById(id) {
   for (let i = 0; i < ELEMENTS.length; i++) {
@@ -1416,23 +1737,23 @@ const ACHIEVEMENTS = [
   { id: 'wave5', name: '前哨戦', desc: 'Wave 5 に到達する',
     coin: 3, gem: 0, check: (c) => c.bestWave >= 5 },
   { id: 'wave10', name: '防衛線', desc: 'Wave 10 に到達する',
-    coin: 6, gem: 0, check: (c) => c.bestWave >= 10 },
+    coin: 6, gem: 0, frag: 1, check: (c) => c.bestWave >= 10 },
   { id: 'wave25', name: '要塞', desc: 'Wave 25 に到達する',
-    coin: 15, gem: 1, check: (c) => c.bestWave >= 25 },
+    coin: 15, gem: 1, frag: 1, check: (c) => c.bestWave >= 25 },
   { id: 'wave50', name: '不落', desc: 'Wave 50 に到達する',
-    coin: 40, gem: 2, check: (c) => c.bestWave >= 50 },
+    coin: 40, gem: 2, frag: 2, check: (c) => c.bestWave >= 50 },
   { id: 'wave100', name: '無限回廊', desc: 'Wave 100 に到達する',
-    coin: 120, gem: 5, check: (c) => c.bestWave >= 100 },
+    coin: 120, gem: 5, frag: 3, check: (c) => c.bestWave >= 100 },
   { id: 'kill100', name: '掃討', desc: '累計100体を撃破する',
     coin: 5, gem: 0, check: (c) => c.totalKills >= 100 },
   { id: 'kill1000', name: '殲滅者', desc: '累計1000体を撃破する',
-    coin: 20, gem: 1, check: (c) => c.totalKills >= 1000 },
+    coin: 20, gem: 1, frag: 1, check: (c) => c.totalKills >= 1000 },
   { id: 'kill10000', name: '絶滅', desc: '累計10000体を撃破する',
-    coin: 100, gem: 4, check: (c) => c.totalKills >= 10000 },
+    coin: 100, gem: 4, frag: 3, check: (c) => c.totalKills >= 10000 },
   { id: 'bossFirst', name: '巨人狩り', desc: 'ボスを初めて撃破する',
-    coin: 30, gem: 2, check: (c) => c.bossKills >= 1 },
+    coin: 30, gem: 2, frag: 2, check: (c) => c.bossKills >= 1 },
   { id: 'boss10', name: '討伐隊', desc: 'ボスを10体撃破する',
-    coin: 150, gem: 6, check: (c) => c.bossKills >= 10 },
+    coin: 150, gem: 6, frag: 4, check: (c) => c.bossKills >= 10 },
   { id: 'rich', name: '軍需産業', desc: '一度の周回で $100K を所持する',
     coin: 10, gem: 0, check: (c) => c.maxCash >= 100000 },
   { id: 'richer', name: '経済制圧', desc: '一度の周回で $10M を所持する',
@@ -1442,11 +1763,11 @@ const ACHIEVEMENTS = [
   { id: 'upgrade1000', name: '過剰武装', desc: '強化の合計レベルを1000にする',
     coin: 60, gem: 3, check: (c) => c.upgradeLevels >= 1000 },
   { id: 'codexAll', name: '観測完了', desc: '全ての敵性体を図鑑に記録する',
-    coin: 45, gem: 3, check: (c) => c.discoveredCount >= ENEMY_TYPES.length },
+    coin: 45, gem: 3, frag: 2, check: (c) => c.discoveredCount >= ENEMY_TYPES.length },
   { id: 'research10', name: '研究者', desc: '研究の合計レベルを10にする',
     coin: 8, gem: 0, check: (c) => c.researchLevels >= 10 },
   { id: 'research100', name: '技術特異点', desc: '研究の合計レベルを100にする',
-    coin: 80, gem: 4, check: (c) => c.researchLevels >= 100 },
+    coin: 80, gem: 4, frag: 3, check: (c) => c.researchLevels >= 100 },
   { id: 'runs10', name: '不屈', desc: '10回プレイする',
     coin: 10, gem: 0, check: (c) => c.totalRuns >= 10 },
   { id: 'wallMaster', name: '鉄壁', desc: '防御壁を展開した状態でWave20をクリア',
@@ -1458,9 +1779,9 @@ const ACHIEVEMENTS = [
   { id: 'fullEquip', name: '完全装備', desc: '4種すべてのモジュールを装備する',
     coin: 30, gem: 2, check: (c) => c.equippedCount >= MODULE_TYPES.length },
   { id: 'legendModule', name: '伝説の設計', desc: 'Legend以上のモジュールを入手する',
-    coin: 50, gem: 3, check: (c) => c.bestModuleRarity >= 3 },
+    coin: 50, gem: 3, frag: 2, check: (c) => c.bestModuleRarity >= 3 },
   { id: 'moduleMax', name: '限界突破', desc: 'モジュールを +20 まで強化する',
-    coin: 80, gem: 4, check: (c) => c.bestModuleLevel >= MODULE_MAX_LEVEL },
+    coin: 80, gem: 4, frag: 3, check: (c) => c.bestModuleLevel >= MODULE_MAX_LEVEL },
 ];
 
 const SHOP_CATEGORIES = [
@@ -1543,7 +1864,7 @@ function createModule(blueprint, rarity) {
 }
 
 /** BASE_STATS へ永続研究とLAB研究の効果を適用した値を返す（周回開始時の土台） */
-function computeResearchStats(equippedModules, elementId) {
+function computeResearchStats(equippedModules, elementId, elementState) {
   const s = Object.assign({}, BASE_STATS);
   for (let i = 0; i < RESEARCH.length; i++) {
     const r = RESEARCH[i];
@@ -1562,7 +1883,11 @@ function computeResearchStats(equippedModules, elementId) {
   // 属性コアの常時補正（elementPower の確定後に適用する）
   if (elementId) {
     const el = elementById(elementId);
-    if (el.stats) el.stats(s, s.elementPower);
+    if (el.stats) {
+      const state = elementState || { level: 1, research: {} };
+      const P = elementParams(el, state.level, state.research);
+      el.stats(s, s.elementPower, P);
+    }
   }
   return s;
 }
@@ -1612,6 +1937,16 @@ function labSpeedupGemCost(remainingSec) {
 /** 到達Waveに対して解放済みのTierかどうか */
 function isTierUnlocked(tier, bestWave) {
   return bestWave >= tierRequiredWave(tier);
+}
+
+/**
+ * 項目の解放に必要なWave。
+ * unlockWave が個別指定されていればTierより優先する。
+ */
+function requiredWaveOf(item) {
+  return item.unlockWave !== undefined
+    ? item.unlockWave
+    : tierRequiredWave(item.tier);
 }
 
 /** 配列内のレベル合計（実績判定に使用） */
@@ -1742,6 +2077,12 @@ class SaveManager {
       gachaPulls: 0,            // ガチャ回数（実績・演出用）
       activeElement: 'none',    // 使用中の属性コア
       pendingElement: 'none',   // 次の周回から使う属性コア
+      elementsUnlocked: { none: true },  // 解放済みの属性
+      elementExp: {},           // 属性ID → 累計撃破数
+      elementLevel: {},         // 属性ID → 確定済みレベル（1〜5）
+      elementResearch: {},      // 属性研究ID → レベル
+      fragments: 0,             // Core Fragment（属性専用資源）
+      elementMigrated: false,   // 旧Wave解放方式からの移行済みフラグ
     };
   }
 
@@ -1916,6 +2257,34 @@ class Sfx {
     this._tone(880, t + 0.09, 0.10, 'triangle', 0.07);
     this._tone(1320, t + 0.18, 0.22, 'triangle', 0.07);
   }
+  coreUnlock() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    // 荘厳な和音（新コア解放）
+    const chord = [262, 330, 392, 523];
+    for (let i = 0; i < chord.length; i++) {
+      this._tone(chord[i], t, 1.2, 'triangle', 0.06);
+      this._tone(chord[i] * 2, t + 0.35, 0.9, 'sine', 0.04);
+    }
+    this._noise(t + 0.3, 0.9, 0.07, 6000);
+    this._tone(1568, t + 0.6, 0.7, 'triangle', 0.06);
+  }
+  elementLevelUp() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const notes = [523, 659, 784, 1047];
+    for (let i = 0; i < notes.length; i++) {
+      this._tone(notes[i], t + i * 0.06, 0.2, 'triangle', 0.06);
+    }
+  }
+  superOverclock() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(220, t, 0.9, 'sawtooth', 0.11, 3520);
+    this._tone(330, t + 0.1, 0.8, 'square', 0.08, 2640);
+    this._tone(110, t, 1.0, 'sine', 0.12, 55);
+    this._noise(t, 0.6, 0.1, 7000);
+  }
   overclock() {
     if (!this.enabled || !this.ctx) return;
     const t = this.ctx.currentTime;
@@ -2066,6 +2435,8 @@ class Enemy {
     this.chill = 0;          // 冷却の蓄積（0〜1）
     this.chillTimer = 0;
     this.freezeCd = 0;       // 凍結の再発クールダウン
+    this.slowMax = 0.8;      // 減速の上限（氷属性が書き換える）
+    this.frozenBonus = 1;    // 凍結中の被ダメージ倍率
   }
   init(type, wave, x, y, speedMul) {
     this.type = type;
@@ -2092,6 +2463,8 @@ class Enemy {
     this.chill = 0;
     this.chillTimer = 0;
     this.freezeCd = 0;
+    this.slowMax = 0.8;
+    this.frozenBonus = 1;
   }
 
   /**
@@ -2126,7 +2499,8 @@ class Enemy {
       this.stunTimer -= dt;
       moving = false;
     }
-    const slow = this.chillTimer > 0 ? 1 - Math.min(this.chill * 0.8, 0.8) : 1;
+    const cap = this.slowMax || 0.8;
+    const slow = this.chillTimer > 0 ? 1 - Math.min(this.chill * cap, cap) : 1;
 
     if (moving) {
       this.x += (dx / dist) * this.speed * slow * dt;
@@ -2396,7 +2770,8 @@ class Player {
     // その上に周回内アップグレードを乗せる
     const s = computeResearchStats(
       this.game.equippedModules(),
-      this.game.meta ? this.game.meta.activeElement : 'none'
+      this.game.meta ? this.game.meta.activeElement : 'none',
+      this.game.elementState ? this.game.elementState() : null
     );
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
@@ -2407,6 +2782,7 @@ class Player {
     s.maxHp *= s.hpMul;
     if (s.enemySpeedMul < 0.1) s.enemySpeedMul = 0.1;
     this.stats = s;
+    if (this.game.refreshElementParams) this.game.refreshElementParams();
 
     const hpGain = s.maxHp - prevMaxHp;
     if (hpGain > 0) this.hp += hpGain;
@@ -2420,8 +2796,14 @@ class Player {
   /** 熱による現在の補正値をまとめて返す */
   heatBonus() {
     const s = this.stats;
+    if (this.heatState === 'super') {
+      // SUPER OVERCLOCK: Mastery Lv5 で解放される最上位状態
+      const m = 1 + s.masteryPowerMul;
+      return { aspd: 3.4 * m, dmg: 3.2 * m, crit: 0.45 * s.heatBonusMul };
+    }
     if (this.heatState === 'overclock') {
-      return { aspd: 2.2, dmg: 1.9, crit: 0.25 * s.heatBonusMul };
+      const m = 1 + s.masteryPowerMul;
+      return { aspd: 2.2 * m, dmg: 1.9 * m, crit: 0.25 * s.heatBonusMul };
     }
     if (this.heatState === 'overheat') {
       return { aspd: 0.55, dmg: 0.7, crit: 0 };
@@ -2440,7 +2822,7 @@ class Player {
   updateHeat(dt) {
     const s = this.stats;
 
-    if (this.heatState === 'overclock') {
+    if (this.heatState === 'overclock' || this.heatState === 'super') {
       this.heatStateTimer -= dt;
       this.heat = CONFIG.HEAT_MAX;
       if (this.heatStateTimer <= 0) {
@@ -2477,9 +2859,10 @@ class Player {
     if (this.heat < CONFIG.HEAT_MAX) return;
 
     this.heat = CONFIG.HEAT_MAX;
-    this.heatState = 'overclock';
+    // Mastery Lv5 到達で SUPER OVERCLOCK へ進化する
+    this.heatState = s.superOverclock ? 'super' : 'overclock';
     this.heatStateTimer = CONFIG.OVERCLOCK_DURATION + s.overclockDuration;
-    this.game.onOverclockStart();
+    this.game.onOverclockStart(this.heatState === 'super');
   }
 
   update(dt) {
@@ -2904,7 +3287,9 @@ class Shop {
       const fa = fav[a.id] ? 0 : 1;
       const fb = fav[b.id] ? 0 : 1;
       if (fa !== fb) return fa - fb;
-      if (a.tier !== b.tier) return a.tier - b.tier;
+      const wa = requiredWaveOf(a);
+      const wb = requiredWaveOf(b);
+      if (wa !== wb) return wa - wb;
       return UPGRADES.indexOf(a) - UPGRADES.indexOf(b);
     });
     return list;
@@ -2963,7 +3348,7 @@ class Shop {
       desc.className = 'shop-item-desc';
       desc.textContent = unlocked
         ? u.description
-        : 'WAVE ' + tierRequiredWave(u.tier) + ' で解放';
+        : 'WAVE ' + requiredWaveOf(u) + ' で解放';
 
       const value = document.createElement('div');
       value.className = 'shop-item-value';
@@ -3041,7 +3426,7 @@ class Shop {
         els.btn.classList.add('disabled');
         els.btn.classList.remove('maxed');
         els.count.textContent = 'LOCK';
-        els.cost.textContent = 'W' + tierRequiredWave(u.tier);
+        els.cost.textContent = 'W' + requiredWaveOf(u);
         return;
       }
 
@@ -3258,7 +3643,9 @@ class Research {
 
     // 解放される順（Tier昇順）に並べる。解放済みが必ず前へ来る
     const sorted = RESEARCH.slice().sort((a, b) => {
-      if (a.tier !== b.tier) return a.tier - b.tier;
+      const wa = requiredWaveOf(a);
+      const wb = requiredWaveOf(b);
+      if (wa !== wb) return wa - wb;
       return RESEARCH.indexOf(a) - RESEARCH.indexOf(b);
     });
 
@@ -3286,7 +3673,7 @@ class Research {
       desc.className = 'shop-item-desc';
       desc.textContent = unlocked
         ? r.description
-        : 'WAVE ' + tierRequiredWave(r.tier) + ' で解放';
+        : 'WAVE ' + requiredWaveOf(r) + ' で解放';
 
       const value = document.createElement('div');
       value.className = 'shop-item-value';
@@ -3330,7 +3717,7 @@ class Research {
         els.btn.classList.add('disabled');
         els.btn.classList.remove('maxed');
         els.count.textContent = 'LOCK';
-        els.cost.textContent = 'W' + tierRequiredWave(r.tier);
+        els.cost.textContent = 'W' + requiredWaveOf(r);
         continue;
       }
 
@@ -3479,7 +3866,9 @@ class Lab {
     const sorted = LAB_RESEARCH
       .filter((r) => r.category === this.activeCategory)
       .sort((a, b) => {
-        if (a.tier !== b.tier) return a.tier - b.tier;
+        const wa = requiredWaveOf(a);
+        const wb = requiredWaveOf(b);
+        if (wa !== wb) return wa - wb;
         return LAB_RESEARCH.indexOf(a) - LAB_RESEARCH.indexOf(b);
       });
 
@@ -3507,7 +3896,7 @@ class Lab {
       desc.className = 'shop-item-desc';
       desc.textContent = unlocked
         ? r.description
-        : 'WAVE ' + tierRequiredWave(r.tier) + ' で解放';
+        : 'WAVE ' + requiredWaveOf(r) + ' で解放';
 
       const value = document.createElement('div');
       value.className = 'shop-item-value';
@@ -3621,7 +4010,7 @@ class Lab {
         els.btn.classList.add('disabled');
         els.btn.classList.remove('maxed');
         els.count.textContent = 'LOCK';
-        els.cost.textContent = 'W' + tierRequiredWave(r.tier);
+        els.cost.textContent = 'W' + requiredWaveOf(r);
         return;
       }
 
@@ -4147,6 +4536,10 @@ class Elements {
       .addEventListener('click', () => this.toggle());
     document.getElementById('btn-elements-close')
       .addEventListener('click', () => this.close());
+    document.getElementById('btn-tooltip-close')
+      .addEventListener('click', () => {
+        document.getElementById('overlay-tooltip').classList.add('hidden');
+      });
   }
 
   toggle() { this.isOpen ? this.close() : this.open(); }
@@ -4170,70 +4563,422 @@ class Elements {
       ? '戦闘中の変更は次の周回から反映されます。'
       : '属性を選ぶと戦い方が大きく変わります。';
 
+    document.getElementById('val-element-frag').textContent =
+      formatNumber(g.meta.fragments);
+
+    this.listEl.appendChild(this.buildOverclockCard());
+
+    const head = document.createElement('div');
+    head.className = 'element-section';
+    head.textContent = '属性コア';
+    this.listEl.appendChild(head);
+
+    // 移行のお知らせ（初回のみ）
+    if (g.migrationNotice) {
+      const notice = document.createElement('div');
+      notice.className = 'element-notice';
+      notice.textContent = g.migrationNotice;
+      this.listEl.appendChild(notice);
+    }
+
+    // おすすめガイド
+    const rec = g.recommendedElement();
+    if (rec) {
+      const el = elementById(rec.id);
+      const box = document.createElement('div');
+      box.className = 'element-rec';
+      box.style.borderColor = el.color;
+
+      const t = document.createElement('div');
+      t.className = 'element-rec-title';
+      t.textContent = 'おすすめ： ' + el.icon + ' ' + el.name;
+      t.style.color = el.color;
+      box.appendChild(t);
+
+      for (let i = 0; i < rec.reasons.length; i++) {
+        const r = document.createElement('div');
+        r.className = 'element-rec-reason';
+        r.textContent = '・' + rec.reasons[i];
+        box.appendChild(r);
+      }
+      const note = document.createElement('div');
+      note.className = 'element-rec-note';
+      note.textContent = 'ガイドとしての提示です。どの属性から解放しても構いません。';
+      box.appendChild(note);
+      this.listEl.appendChild(box);
+    }
+
     for (let i = 0; i < ELEMENTS.length; i++) {
-      const el = ELEMENTS[i];
-      const active = g.meta.activeElement === el.id;
-      const pending = g.meta.pendingElement === el.id && !active;
+      this.listEl.appendChild(this.buildElementCard(ELEMENTS[i], power));
+    }
+  }
 
-      const card = document.createElement('div');
-      card.className = 'element-card' +
-        (active ? ' active' : '') + (pending ? ' pending' : '');
-      card.style.borderColor = el.color;
+  /** オーバークロックの現在値をまとめたカード */
+  buildOverclockCard() {
+    const g = this.game;
+    const p = g.player;
+    const st = p.stats;
+    const mastery = RESEARCH.find((r) => r.id === 'overclockMastery');
+    const bonus = p.heatBonus();
 
-      const head = document.createElement('div');
-      head.className = 'element-head';
+    const card = document.createElement('div');
+    card.className = 'oc-card' + (st.superOverclock ? ' super' : '');
 
-      const icon = document.createElement('span');
-      icon.className = 'element-icon';
-      icon.textContent = el.icon;
-      icon.style.color = el.color;
+    const title = document.createElement('div');
+    title.className = 'oc-title';
+    title.textContent = st.superOverclock
+      ? '★ SUPER OVERCLOCK 解放済み'
+      : 'オーバークロック';
+    card.appendChild(title);
 
-      const name = document.createElement('span');
-      name.className = 'element-name';
-      name.textContent = el.name;
-      name.style.color = el.color;
+    const rows = [
+      ['現在の状態', p.heatState === 'super' ? 'SUPER'
+        : p.heatState === 'overclock' ? 'OVERCLOCK'
+        : p.heatState === 'overheat' ? 'OVERHEAT' : '通常'],
+      ['現在倍率', '攻撃速度 ×' + bonus.aspd.toFixed(2) +
+        ' / ダメージ ×' + bonus.dmg.toFixed(2)],
+      ['熱ゲージ倍率', '×' + st.heatGainMul.toFixed(2) +
+        '（強化幅 ×' + st.heatBonusMul.toFixed(2) + '）'],
+      ['持続時間', (CONFIG.OVERCLOCK_DURATION + st.overclockDuration).toFixed(1) + '秒'],
+      ['オーバーヒート', Math.max(
+        CONFIG.OVERHEAT_DURATION - st.overheatReduction, 0.8).toFixed(1) + '秒'],
+      ['Mastery', mastery ? 'Lv' + mastery.level + ' / ' + mastery.maxLevel : '─'],
+    ];
 
-      const tag = document.createElement('span');
-      tag.className = 'element-tag';
-      tag.textContent = el.tagline;
+    for (let i = 0; i < rows.length; i++) {
+      const row = document.createElement('div');
+      row.className = 'oc-row';
+      const k = document.createElement('span');
+      k.className = 'oc-key';
+      k.textContent = rows[i][0];
+      const v = document.createElement('span');
+      v.className = 'oc-val';
+      v.textContent = rows[i][1];
+      row.appendChild(k);
+      row.appendChild(v);
+      card.appendChild(row);
+    }
 
-      head.appendChild(icon);
-      head.appendChild(name);
-      head.appendChild(tag);
+    const hint = document.createElement('div');
+    hint.className = 'oc-hint';
+    hint.textContent = st.superOverclock
+      ? 'ゲージ満タンで SUPER OVERCLOCK が発動します。'
+      : 'Overclock Mastery（研究）を Lv5 にすると SUPER OVERCLOCK が解放されます。';
+    card.appendChild(hint);
+    return card;
+  }
 
-      const desc = document.createElement('div');
-      desc.className = 'element-desc';
-      desc.textContent = el.desc;
+  /** 属性カード。解放状況・レベル・ガイド・専用研究を表示する */
+  buildElementCard(el, power) {
+    const g = this.game;
+    const unlocked = g.isElementUnlocked(el.id);
+    const active = g.meta.activeElement === el.id;
+    const pending = g.meta.pendingElement === el.id && !active;
+    const rec = g.recommendedElement();
 
-      const effect = document.createElement('div');
-      effect.className = 'element-effect';
-      effect.textContent = el.effectText(power);
+    const card = document.createElement('div');
+    card.className = 'element-card' +
+      (active ? ' active' : '') + (pending ? ' pending' : '') +
+      (unlocked ? '' : ' locked');
+    card.style.borderColor = unlocked ? el.color : 'rgba(109,138,163,0.25)';
 
-      const state = document.createElement('div');
-      state.className = 'element-state';
-      state.textContent = active ? '使用中' : pending ? '次の周回から適用' : '選択する';
-      if (active) state.style.color = el.color;
+    // ---- 見出し ----
+    const head = document.createElement('div');
+    head.className = 'element-head';
 
-      card.appendChild(head);
-      card.appendChild(desc);
-      card.appendChild(effect);
-      card.appendChild(state);
+    const icon = document.createElement('span');
+    icon.className = 'element-icon';
+    icon.textContent = el.icon;
+    icon.style.color = unlocked ? el.color : 'var(--text-dim)';
 
-      if (!active) {
-        card.addEventListener('click', () => {
+    const name = document.createElement('span');
+    name.className = 'element-name';
+    name.textContent = el.name;
+    name.style.color = unlocked ? el.color : 'var(--text-dim)';
+
+    head.appendChild(icon);
+    head.appendChild(name);
+
+    if (unlocked) {
+      const lvBadge = document.createElement('span');
+      lvBadge.className = 'element-lv';
+      lvBadge.textContent = 'Lv ' + g.elementLevelOf(el.id);
+      lvBadge.style.color = el.color;
+      head.appendChild(lvBadge);
+    }
+
+    if (rec && rec.id === el.id) {
+      const recBadge = document.createElement('span');
+      recBadge.className = 'element-rec-badge';
+      recBadge.textContent = 'おすすめ';
+      head.appendChild(recBadge);
+    }
+
+    // ツールチップ
+    const help = document.createElement('button');
+    help.className = 'element-help';
+    help.textContent = '？';
+    help.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      g.sfx.unlock();
+      this.showTooltip(el);
+    });
+    head.appendChild(help);
+    card.appendChild(head);
+
+    // ---- ガイド（おすすめ度・特徴）----
+    const guide = document.createElement('div');
+    guide.className = 'element-guide';
+
+    const stars = document.createElement('div');
+    stars.className = 'element-stars';
+    stars.textContent = '★'.repeat(el.rating) + '☆'.repeat(5 - el.rating);
+    stars.style.color = el.color;
+
+    const arche = document.createElement('span');
+    arche.className = 'element-arche';
+    arche.textContent = '【' + el.archetype + '】';
+
+    const gtext = document.createElement('div');
+    gtext.className = 'element-guide-text';
+    gtext.textContent = el.guide;
+
+    stars.appendChild(arche);
+    guide.appendChild(stars);
+    guide.appendChild(gtext);
+    card.appendChild(guide);
+
+    // ---- 未解放: 解放ボタン ----
+    if (!unlocked) {
+      const cost = g.nextUnlockCost();
+      const cond = document.createElement('div');
+      cond.className = 'element-cond';
+      cond.textContent = '解放に Core Fragment ' + cost + ' 個';
+      card.appendChild(cond);
+
+      const prog = document.createElement('div');
+      prog.className = 'element-cond-progress';
+      prog.textContent = '所持 ' + g.meta.fragments + ' / ' + cost;
+      card.appendChild(prog);
+
+      const btn = document.createElement('button');
+      btn.className = 'element-select unlock';
+      const afford = g.meta.fragments >= cost;
+      btn.textContent = afford
+        ? 'このコアを解放する（' + cost + ' ◆◆）'
+        : 'Core Fragment が ' + (cost - g.meta.fragments) + ' 個不足';
+      if (!afford) btn.classList.add('disabled');
+      btn.addEventListener('click', () => {
+        g.sfx.unlock();
+        if (g.unlockElement(el.id)) {
+          g.sfx.buy();
+        } else {
+          g.sfx.deny();
+          g.showToast('Core Fragment が不足しています');
+        }
+        this.build();
+      });
+      card.appendChild(btn);
+      return card;
+    }
+
+    // ---- 説明 ----
+    const desc = document.createElement('div');
+    desc.className = 'element-desc';
+    desc.textContent = el.desc;
+    card.appendChild(desc);
+
+    // ---- 経験値バーと昇格 ----
+    const level = g.elementLevelOf(el.id);
+    const exp = g.elementExpOf(el.id);
+    const maxLv = el.expTable.length;
+    const cur = el.expTable[level - 1];
+    const next = level < maxLv ? el.expTable[level] : null;
+
+    const expWrap = document.createElement('div');
+    expWrap.className = 'element-exp';
+    const bar = document.createElement('div');
+    bar.className = 'element-exp-bar';
+    const fill = document.createElement('div');
+    fill.className = 'element-exp-fill';
+    fill.style.background = el.color;
+    fill.style.width = next
+      ? (Math.min((exp - cur) / (next - cur), 1) * 100).toFixed(1) + '%'
+      : '100%';
+    bar.appendChild(fill);
+
+    const expText = document.createElement('div');
+    expText.className = 'element-exp-text';
+    expText.textContent = next
+      ? '撃破 ' + formatNumber(exp) + ' / ' + formatNumber(next)
+      : '撃破 ' + formatNumber(exp) + '（最大レベル）';
+
+    expWrap.appendChild(bar);
+    expWrap.appendChild(expText);
+    card.appendChild(expWrap);
+
+    // ---- 現在効果と次レベル効果 ----
+    const state = g.elementState(el.id);
+    const P = elementParams(el, level, state.research);
+
+    const effect = document.createElement('div');
+    effect.className = 'element-effect';
+    effect.textContent = '現在: ' + el.effectText(P, power);
+    card.appendChild(effect);
+
+    if (next) {
+      const perk = el.levelPerks[level];
+      const nextEl = document.createElement('div');
+      nextEl.className = 'element-next';
+      nextEl.textContent = 'Lv' + (level + 1) + ': ' + (perk ? perk.text : '─');
+      card.appendChild(nextEl);
+
+      // 昇格ボタン
+      const check = g.canLevelUpElement(el.id);
+      const up = document.createElement('button');
+      up.className = 'element-levelup';
+      if (check.ok) {
+        up.textContent = 'Lv' + (level + 1) + ' へ昇格（' + check.cost + ' ◆◆）';
+        up.addEventListener('click', () => {
           g.sfx.unlock();
-          g.selectElement(el.id);
+          if (g.levelUpElement(el.id)) g.sfx.research();
+          else g.sfx.deny();
+          this.build();
+        });
+      } else {
+        up.classList.add('disabled');
+        up.textContent = check.reason === 'exp'
+          ? '撃破 ' + formatNumber(check.needExp) + ' で昇格可能'
+          : 'Core Fragment ' + check.cost + ' 個が必要';
+      }
+      card.appendChild(up);
+    }
+
+    // ---- 専用研究 ----
+    const resWrap = document.createElement('div');
+    resWrap.className = 'element-research';
+    const resTitle = document.createElement('div');
+    resTitle.className = 'element-research-title';
+    resTitle.textContent = el.name + ' 専用研究（Coin）';
+    resWrap.appendChild(resTitle);
+
+    for (let i = 0; i < el.research.length; i++) {
+      resWrap.appendChild(this.buildResearchRow(el, el.research[i]));
+    }
+    card.appendChild(resWrap);
+
+    // ---- 選択 ----
+    const sel = document.createElement('button');
+    sel.className = 'element-select';
+    sel.textContent = active ? '使用中' : pending ? '次の周回から適用' : 'このコアを装填';
+    if (active) {
+      sel.classList.add('disabled');
+      sel.style.color = el.color;
+    } else {
+      sel.addEventListener('click', () => {
+        g.sfx.unlock();
+        if (g.selectElement(el.id)) {
           g.sfx.buy();
           g.showToast(
             g.running
               ? el.name + ' を次の周回に設定しました'
               : el.name + ' を装填しました'
           );
-          this.build();
-        });
-      }
-      this.listEl.appendChild(card);
+        } else {
+          g.sfx.deny();
+        }
+        this.build();
+      });
     }
+    card.appendChild(sel);
+    return card;
+  }
+
+  /** 「？」で開く詳細説明。データ配列から自動生成する */
+  showTooltip(el) {
+    const box = document.getElementById('overlay-tooltip');
+    document.getElementById('tooltip-icon').textContent = el.icon;
+    document.getElementById('tooltip-icon').style.color = el.color;
+    document.getElementById('tooltip-name').textContent = el.name;
+    document.getElementById('tooltip-name').style.color = el.color;
+    document.getElementById('tooltip-arche').textContent =
+      '【' + el.archetype + '】  ' + '★'.repeat(el.rating) + '☆'.repeat(5 - el.rating);
+    document.getElementById('tooltip-guide').textContent = el.guide;
+
+    const body = document.getElementById('tooltip-body');
+    body.textContent = '';
+
+    const sections = [
+      { title: 'メリット', items: el.tooltip.merit, cls: 'merit' },
+      { title: 'デメリット', items: el.tooltip.demerit, cls: 'demerit' },
+      { title: '相性の良い究極武器', items: el.tooltip.weapons, cls: 'future' },
+      { title: '相性の良いドローン', items: el.tooltip.drones, cls: 'future' },
+    ];
+
+    for (let i = 0; i < sections.length; i++) {
+      const sec = sections[i];
+      if (!sec.items || sec.items.length === 0) continue;
+
+      const h = document.createElement('div');
+      h.className = 'tooltip-section ' + sec.cls;
+      h.textContent = sec.title;
+      body.appendChild(h);
+
+      const ul = document.createElement('ul');
+      ul.className = 'tooltip-list';
+      for (let k = 0; k < sec.items.length; k++) {
+        const li = document.createElement('li');
+        li.textContent = sec.items[k];
+        ul.appendChild(li);
+      }
+      body.appendChild(ul);
+    }
+    box.classList.remove('hidden');
+  }
+
+  /** 属性専用研究の1行 */
+  buildResearchRow(el, r) {
+    const g = this.game;
+    const lv = g.elementResearchLevel(r.id);
+    const maxed = lv >= r.maxLevel;
+    const cost = Math.floor(r.baseCost * Math.pow(r.growth, lv));
+
+    const row = document.createElement('div');
+    row.className = 'el-res-row';
+
+    const info = document.createElement('div');
+    info.className = 'el-res-info';
+    const n = document.createElement('div');
+    n.className = 'el-res-name';
+    n.textContent = r.name;
+    const v = document.createElement('div');
+    v.className = 'el-res-val';
+    v.textContent = r.unit + ' +' + (r.per * lv * 100).toFixed(0) + '%  (Lv ' + lv + '/' + r.maxLevel + ')';
+    info.appendChild(n);
+    info.appendChild(v);
+
+    const btn = document.createElement('button');
+    btn.className = 'el-res-btn';
+    if (maxed) {
+      btn.textContent = 'MAX';
+      btn.classList.add('disabled');
+    } else {
+      btn.textContent = formatNumber(cost) + '◎';
+      if (g.meta.coin < cost) btn.classList.add('disabled');
+      btn.addEventListener('click', () => {
+        g.sfx.unlock();
+        if (g.buyElementResearch(el, r)) {
+          g.sfx.research();
+        } else {
+          g.sfx.deny();
+        }
+        this.build();
+      });
+    }
+
+    row.appendChild(info);
+    row.appendChild(btn);
+    return row;
   }
 }
 
@@ -4489,6 +5234,7 @@ class Game {
     this.shockwaves = [];
     this.packages = [];
     this.lightnings = [];
+    this.blackholes = [];
 
     // プール
     this.enemyPool = new Pool(() => new Enemy(), 80);
@@ -4575,6 +5321,16 @@ class Game {
     }
     this.shop.buildList();
 
+    // 旧仕様（Wave到達で自動解放）からの移行処理
+    this.migrateElementUnlocks();
+
+    // 未解放の属性が選ばれていたらニュートラルへ戻す
+    if (!this.isElementUnlocked(this.meta.activeElement)) {
+      this.meta.activeElement = 'none';
+      this.meta.pendingElement = 'none';
+    }
+    this.player.recalc();
+
     // 閉じている間に完了した研究を回収してから報酬を計算する。
     // 回収処理がセーブを走らせるので、離脱時刻は先に控えておく。
     const lastExitAtBoot = this.meta.lastExit;
@@ -4595,6 +5351,7 @@ class Game {
       cashItem: document.querySelector('.currency-cash'),
       coin: $('val-coin'),
       gem: $('val-gem'),
+      frag: $('val-frag'),
       waveBox: $('hud-wave'),
       wave: $('val-wave'),
       remaining: $('val-remaining'),
@@ -4615,6 +5372,7 @@ class Game {
       toast: $('toast'),
       speedBtn: $('btn-speed'),
       heatWrap: $('heat-wrap'),
+      coreUnlock: $('overlay-core-unlock'),
       heatFill: $('heat-fill'),
       heatLabel: $('heat-label'),
       elementBadge: $('element-badge'),
@@ -4972,18 +5730,24 @@ class Game {
   /** 高Wave到達の節目でGemを支払う */
   checkGemMilestones() {
     let total = 0;
+    let frag = 0;
     for (let i = 0; i < GEM_MILESTONES.length; i++) {
       const m = GEM_MILESTONES[i];
       if (this.meta.bestWave < m.wave) continue;
       if (this.meta.gemMilestones[m.wave]) continue;
       this.meta.gemMilestones[m.wave] = true;
       total += m.gem;
+      frag += m.frag || 0;
     }
-    if (total <= 0) return;
+    if (frag > 0) this.addFragments(frag, true);
+    if (total <= 0 && frag <= 0) return;
 
     const amount = Math.floor(total * this.player.stats.gemFindMul);
     this.meta.gem += amount;
-    this.showToast('到達報酬  +' + amount + ' ◆', 3000);
+    const parts = [];
+    if (amount > 0) parts.push('+' + amount + ' ◆');
+    if (frag > 0) parts.push('+' + frag + ' ◆◆');
+    this.showToast('到達報酬  ' + parts.join(' / '), 3000);
     this.sfx.achievement();
     this.flashScreen(0.2, '#ff2d95');
     this.requestSave();
@@ -5053,7 +5817,7 @@ class Game {
 
   /** 指定アップグレードが解放済みか */
   isUnlocked(u) {
-    return isTierUnlocked(u.tier, this.meta.bestWave);
+    return this.meta.bestWave >= requiredWaveOf(u);
   }
 
   /* ---------- ゲームスピード ---------- */
@@ -5134,8 +5898,12 @@ class Game {
 
   requestSave() { this.saveDirty = true; }
 
-  flushSave() {
-    if (!this.saveDirty) return;
+  /**
+   * 変更があればセーブする。
+   * force を渡すと変更フラグに関係なく必ず書き込む。
+   */
+  flushSave(force) {
+    if (!this.saveDirty && !force) return;
     this.saveDirty = false;
     this.meta.lastExit = Date.now();
     this.meta.discovered = [...this.discovered];
@@ -5190,9 +5958,12 @@ class Game {
       this.meta.achievements[a.id] = true;
       this.meta.coin += a.coin;
       this.meta.gem += a.gem;
+      if (a.frag) this.meta.fragments += a.frag;
       unlocked = true;
 
-      const reward = a.coin + '◎' + (a.gem > 0 ? ' / ' + a.gem + '◆' : '');
+      const reward = a.coin + '◎' +
+        (a.gem > 0 ? ' / ' + a.gem + '◆' : '') +
+        (a.frag ? ' / ' + a.frag + '◆◆' : '');
       this.showToast('実績解除: ' + a.name + '  +' + reward);
       this.sfx.achievement();
     }
@@ -5210,6 +5981,279 @@ class Game {
     return elementById(this.meta.activeElement);
   }
 
+  /** 指定属性の累計撃破数とレベル */
+  elementExpOf(id) { return this.meta.elementExp[id] || 0; }
+
+  /** 確定済みの属性レベル（Core Fragment を払って上げたもの） */
+  elementLevelOf(id) {
+    const lv = this.meta.elementLevel[id];
+    const el = elementById(id);
+    const max = el.expTable.length;
+    if (typeof lv !== 'number' || lv < 1) return 1;
+    return Math.min(lv, max);
+  }
+
+  /** 撃破数の条件を満たしていて、次のレベルへ上げられるか */
+  canLevelUpElement(id) {
+    const el = elementById(id);
+    const lv = this.elementLevelOf(id);
+    if (lv >= el.expTable.length) return { ok: false, reason: 'max' };
+    if (!this.isElementUnlocked(id)) return { ok: false, reason: 'locked' };
+
+    const needExp = el.expTable[lv];
+    const cost = this.elementLevelCost(el, lv);
+    if (this.elementExpOf(id) < needExp) {
+      return { ok: false, reason: 'exp', needExp, cost };
+    }
+    if (this.meta.fragments < cost) {
+      return { ok: false, reason: 'fragment', needExp, cost };
+    }
+    return { ok: true, needExp, cost };
+  }
+
+  elementLevelCost(el, level) {
+    const table = el.levelCost || DEFAULT_LEVEL_COST;
+    return table[level - 1] !== undefined
+      ? table[level - 1]
+      : table[table.length - 1];
+  }
+
+  /** Core Fragment を払って属性のレベルを上げる */
+  levelUpElement(id) {
+    const check = this.canLevelUpElement(id);
+    if (!check.ok) return false;
+
+    const el = elementById(id);
+    this.meta.fragments -= check.cost;
+    this.meta.elementLevel[id] = this.elementLevelOf(id) + 1;
+    const after = this.elementLevelOf(id);
+
+    this.player.recalc();
+    this.sfx.elementLevelUp();
+    this.flashScreen(0.22, el.color);
+    this.showToast(
+      el.name + ' コア Lv' + after + '  ' +
+      (el.levelPerks[after - 1] ? el.levelPerks[after - 1].text : ''),
+      3200
+    );
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /* ---------- Core Fragment ---------- */
+
+  /** 次に属性を1つ解放するのに必要な Core Fragment */
+  nextUnlockCost() {
+    // ニュートラルは最初から解放済みなので数に含めない
+    let unlocked = 0;
+    for (let i = 0; i < ELEMENTS.length; i++) {
+      const el = ELEMENTS[i];
+      if (el.id === 'none') continue;
+      if (this.meta.elementsUnlocked[el.id]) unlocked++;
+    }
+    return ELEMENT_UNLOCK_COSTS[unlocked] !== undefined
+      ? ELEMENT_UNLOCK_COSTS[unlocked]
+      : ELEMENT_UNLOCK_COSTS[ELEMENT_UNLOCK_COSTS.length - 1];
+  }
+
+  addFragments(amount, silent) {
+    if (amount <= 0) return;
+    this.meta.fragments += amount;
+    this.requestSave();
+    this.hudDirty = true;
+    if (!silent) {
+      this.showToast('Core Fragment +' + amount + ' ◆◆', 2600);
+      this.sfx.achievement();
+    }
+  }
+
+  /** Core Fragment を払って属性を解放する */
+  unlockElement(id) {
+    if (this.isElementUnlocked(id)) return false;
+    const cost = this.nextUnlockCost();
+    if (this.meta.fragments < cost) return false;
+
+    this.meta.fragments -= cost;
+    this.meta.elementsUnlocked[id] = true;
+    this.meta.elementLevel[id] = 1;
+    this.showCoreUnlock(elementById(id));
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /**
+   * 旧仕様（Wave到達で自動解放）からの移行。
+   * 自動解放されていた属性は一度ロックへ戻し、
+   * 相当する Core Fragment を返還して選び直せるようにする。
+   */
+  migrateElementUnlocks() {
+    if (this.meta.elementMigrated) return;
+    this.meta.elementMigrated = true;
+
+    let refund = 0;
+    let count = 0;
+    for (let i = 0; i < ELEMENTS.length; i++) {
+      const el = ELEMENTS[i];
+      if (el.id === 'none') continue;
+      if (!this.meta.elementsUnlocked[el.id]) continue;
+      refund += ELEMENT_UNLOCK_COSTS[count] !== undefined
+        ? ELEMENT_UNLOCK_COSTS[count]
+        : ELEMENT_UNLOCK_COSTS[ELEMENT_UNLOCK_COSTS.length - 1];
+      count++;
+      delete this.meta.elementsUnlocked[el.id];
+    }
+    this.meta.elementsUnlocked.none = true;
+
+    if (count > 0) {
+      this.meta.fragments += refund;
+      this.migrationNotice =
+        '属性の解放方式が変わりました。Core Fragment ' + refund +
+        ' 個を返還したので、好きな属性を選び直してください。';
+    }
+
+    // 旧仕様で経験値だけ持っている場合、レベルは1から選び直す
+    if (!this.meta.activeElement || !this.meta.elementsUnlocked[this.meta.activeElement]) {
+      this.meta.activeElement = 'none';
+      this.meta.pendingElement = 'none';
+    }
+    this.requestSave();
+  }
+
+  /** computeResearchStats へ渡す属性の状態 */
+  elementState(id) {
+    const eid = id || this.meta.activeElement;
+    return {
+      level: this.elementLevelOf(eid),
+      research: this.meta.elementResearch,
+    };
+  }
+
+  /** 効果値のキャッシュを更新する（recalc から呼ばれる） */
+  refreshElementParams() {
+    const el = this.activeElement();
+    const st = this.elementState();
+    this.elParams = elementParams(el, st.level, st.research);
+  }
+
+  /** 属性が解放済みか */
+  isElementUnlocked(id) {
+    return !!this.meta.elementsUnlocked[id];
+  }
+
+  /** 進行状況に応じたおすすめ属性（強制ではなくガイド） */
+  recommendedElement() {
+    for (let i = 0; i < ELEMENT_RECOMMENDATIONS.length; i++) {
+      const rec = ELEMENT_RECOMMENDATIONS[i];
+      if (this.meta.bestWave < rec.minWave) continue;
+      if (this.isElementUnlocked(rec.id)) continue;
+      return rec;
+    }
+    return null;
+  }
+
+  /** 「NEW CORE UNLOCKED」の画面中央演出 */
+  showCoreUnlock(el) {
+    const o = this.hud.coreUnlock;
+    document.getElementById('core-unlock-icon').textContent = el.icon;
+    document.getElementById('core-unlock-icon').style.color = el.color;
+    document.getElementById('core-unlock-name').textContent = el.name + ' CORE';
+    document.getElementById('core-unlock-name').style.color = el.color;
+    document.getElementById('core-unlock-desc').textContent = el.desc;
+    o.classList.remove('hidden');
+
+    this.sfx.coreUnlock();
+    this.flashScreen(0.4, el.color);
+    this.shakeScreen(10);
+    if (this.elements.isOpen) this.elements.build();
+
+    if (this._coreUnlockTimer) clearTimeout(this._coreUnlockTimer);
+    this._coreUnlockTimer = setTimeout(() => o.classList.add('hidden'), 4200);
+  }
+
+  /**
+   * 撃破時に使用中の属性へ経験値を与える。
+   * レベルが上がったら演出を出す。
+   */
+  addElementExp(amount) {
+    const id = this.meta.activeElement;
+    const el = elementById(id);
+    const lv = this.elementLevelOf(id);
+    if (lv >= el.expTable.length) return;
+
+    const before = this.elementExpOf(id);
+    const need = el.expTable[lv];
+    this.meta.elementExp[id] = before + amount;
+
+    // 撃破条件を満たした瞬間だけ知らせる（実際の昇格はFragmentを払う）
+    if (before < need && this.meta.elementExp[id] >= need) {
+      this.sfx.elementLevelUp();
+      this.flashScreen(0.18, el.color);
+      this.showToast(
+        el.name + ' コア Lv' + (lv + 1) + ' の撃破条件を達成  ' +
+        this.elementLevelCost(el, lv) + '◆◆ で昇格可能',
+        3400
+      );
+      this.requestSave();
+      if (this.elements.isOpen) this.elements.build();
+    }
+  }
+
+  /* ---------- 属性専用研究 ---------- */
+
+  elementResearchLevel(id) { return this.meta.elementResearch[id] || 0; }
+
+  buyElementResearch(el, r) {
+    if (!this.isElementUnlocked(el.id)) return false;
+    const lv = this.elementResearchLevel(r.id);
+    if (lv >= r.maxLevel) return false;
+
+    const cost = Math.floor(r.baseCost * Math.pow(r.growth, lv));
+    if (this.meta.coin < cost) return false;
+
+    this.meta.coin -= cost;
+    this.meta.elementResearch[r.id] = lv + 1;
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /** ブラックホール（重力Lv5） */
+  spawnBlackhole(x, y, radius, damage) {
+    this.blackholes.push({ x, y, radius, damage, life: 1.2, maxLife: 1.2 });
+    this.sfx.explosion();
+    this.shakeScreen(6);
+  }
+
+  updateBlackholes(dt) {
+    for (let i = this.blackholes.length - 1; i >= 0; i--) {
+      const b = this.blackholes[i];
+      b.life -= dt;
+
+      // 範囲内の敵を中心へ引き込みつつダメージ
+      const rSq = b.radius * b.radius;
+      for (let j = this.enemies.length - 1; j >= 0; j--) {
+        const e = this.enemies[j];
+        if (!e) continue;
+        const dx = b.x - e.x;
+        const dy = b.y - e.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > rSq) continue;
+        const d = Math.sqrt(d2) || 1;
+        e.x += (dx / d) * 220 * dt;
+        e.y += (dy / d) * 220 * dt;
+        this.damageEnemy(e, b.damage * dt, 0, false);
+      }
+
+      if (b.life <= 0) swapRemove(this.blackholes, i);
+    }
+  }
+
   /** 属性効果の強さ（研究やモジュールで伸ばせる） */
   elementPower() {
     return this.player ? this.player.stats.elementPower : 1;
@@ -5217,6 +6261,7 @@ class Game {
 
   /** 次の周回から使う属性を選ぶ */
   selectElement(id) {
+    if (!this.isElementUnlocked(id)) return false;
     this.meta.pendingElement = id;
     if (!this.running) {
       this.meta.activeElement = id;
@@ -5225,6 +6270,7 @@ class Game {
     this.requestSave();
     this.flushSave();
     this.hudDirty = true;
+    return true;
   }
 
   /** 電撃の描画用エフェクト */
@@ -5259,19 +6305,25 @@ class Game {
 
   /* ---------- オーバークロック ---------- */
 
-  onOverclockStart() {
-    this.flashScreen(0.28, '#ffc233');
-    this.shakeScreen(8);
-    this.sfx.overclock();
-    this.showToast('OVERCLOCK', 1600);
-    this.hud.heatWrap.classList.add('overclock');
+  onOverclockStart(isSuper) {
+    this.flashScreen(isSuper ? 0.45 : 0.28, isSuper ? '#ff2d95' : '#ffc233');
+    this.shakeScreen(isSuper ? 14 : 8);
+    if (isSuper) {
+      this.sfx.superOverclock();
+      this.showToast('★ SUPER OVERCLOCK ★', 2400);
+    } else {
+      this.sfx.overclock();
+      this.showToast('OVERCLOCK', 1600);
+    }
+    this.hud.heatWrap.classList.toggle('super', !!isSuper);
+    this.hud.heatWrap.classList.toggle('overclock', !isSuper);
     this.hud.heatWrap.classList.remove('overheat');
   }
 
   onOverheatStart() {
     this.flashScreen(0.2, '#ff3b5c');
     this.sfx.overheat();
-    this.hud.heatWrap.classList.remove('overclock');
+    this.hud.heatWrap.classList.remove('overclock', 'super');
     this.hud.heatWrap.classList.add('overheat');
   }
 
@@ -5314,6 +6366,7 @@ class Game {
     if (kind === 'coin') this.meta.coin += 100000;
     else if (kind === 'gem') this.meta.gem += 10000;
     else if (kind === 'shard') this.meta.shards += 50000;
+    else if (kind === 'frag') this.meta.fragments += 50;
     else if (kind === 'cash') this.addCash(1e9);
     else if (kind === 'unlockAll') {
       // 全Tierを解放した状態にする（到達Wave記録を引き上げる）
@@ -5327,6 +6380,7 @@ class Game {
       this.meta.coin = 0;
       this.meta.gem = 0;
       this.meta.shards = 0;
+      this.meta.fragments = 0;
     }
     this.requestSave();
     this.flushSave();
@@ -5448,7 +6502,7 @@ class Game {
     // 熱をリセット
     this.player.heat = 0;
     this.player.heatState = 'normal';
-    this.hud.heatWrap.classList.remove('overclock', 'overheat');
+    this.hud.heatWrap.classList.remove('overclock', 'overheat', 'super');
 
     const s = this.player.stats;
     this.cash = s.startingCash + this.meta.pendingCash;
@@ -5513,6 +6567,7 @@ class Game {
     this.releaseAll(this.shockwaves, this.shockwavePool);
     this.releaseAll(this.packages, this.packagePool);
     this.lightnings.length = 0;
+    this.blackholes.length = 0;
 
     this.dps = 0;
     this.dpsAccum = 0;
@@ -5600,6 +6655,10 @@ class Game {
 
     this.runBossKills++;
     this.meta.bossKills++;
+
+    // Core Fragment: ボス討伐（高Waveほど多く得られる）
+    const frag = 1 + Math.floor(this.waveManager.wave / 250);
+    this.addFragments(frag);
 
     // 「結晶探知」の抽選でGemを獲得
     if (Math.random() < this.player.stats.gemChance) {
@@ -5717,7 +6776,8 @@ class Game {
 
     // 属性コアの常時効果
     const el = this.activeElement();
-    if (el.passive) el.passive(this, dt, this.elementPower());
+    if (el.passive) el.passive(this, dt, this.elementPower(), this.elParams);
+    this.updateBlackholes(dt);
 
     this.shop.update(dt);
     this.lab.update(dt);
@@ -5885,7 +6945,7 @@ class Game {
     // ---- 属性コアの命中効果 ----
     const el = this.activeElement();
     if (el.onHit && enemy.hp > 0) {
-      el.onHit(this, enemy, dmg, this.elementPower());
+      el.onHit(this, enemy, dmg, this.elementPower(), this.elParams);
     }
 
     // ---- Critical Chain: クリティカル時の追撃 ----
@@ -5934,6 +6994,8 @@ class Game {
   damageEnemy(enemy, amount, critTier, showNumber) {
     if (!enemy || enemy.hp <= 0) return;
     let dmg = amount * enemy.dmgTakenMul;
+    // 凍結中の敵は追加ダメージを受ける（氷Lv5）
+    if (enemy.stunTimer > 0 && enemy.frozenBonus > 1) dmg *= enemy.frozenBonus;
     if (enemy.isBoss) dmg *= this.player.stats.bossDamageMul;
     enemy.hp -= dmg;
     enemy.hitFlash = 0.08;
@@ -5966,11 +7028,15 @@ class Game {
     if (idx === -1) return;
 
     const s = this.player.stats;
-    this.addCash(Math.ceil(enemy.cash * s.cashBonus));
+    // 経済コアはボス報酬に追加倍率がかかる
+    const bossMul = enemy.isBoss && this.elParams && this.elParams.bossReward
+      ? this.elParams.bossReward : 1;
+    this.addCash(Math.ceil(enemy.cash * s.cashBonus * bossMul));
     if (enemy.coin > 0) this.addCoin(enemy.coin);
     if (s.coinPerKill > 0) this.addCoin(s.coinPerKill);
     this.runKills++;
     this.meta.totalKills++;
+    this.addElementExp(1);
     this.waveManager.killed++;
 
     const tid = enemy.type.id;
@@ -5982,7 +7048,7 @@ class Game {
     if (el.onKill) {
       this._killDepth = (this._killDepth || 0) + 1;
       if (this._killDepth <= 3) {
-        el.onKill(this, enemy, this.elementPower());
+        el.onKill(this, enemy, this.elementPower(), this.elParams);
       }
       this._killDepth--;
     }
@@ -6243,6 +7309,16 @@ class Game {
     this.drawOrbs(ctx);
     this.drawCore(ctx);
     this.drawDamageNumbers(ctx);
+
+    // SUPER OVERCLOCK 中は画面全体を染める
+    if (this.player.heatState === 'super') {
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+      const pulse = 0.10 + Math.sin(this.player.pulse * 4) * 0.05;
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = '#ff2d95';
+      ctx.fillRect(0, 0, this.width, this.height);
+      ctx.globalAlpha = 1;
+    }
 
     // 画面フラッシュ
     if (this.flash > 0) {
@@ -6634,6 +7710,7 @@ class Game {
     h.cash.textContent = formatNumber(this.cash);
     h.coin.textContent = formatNumber(this.meta.coin);
     h.gem.textContent = formatNumber(this.meta.gem);
+    h.frag.textContent = formatNumber(this.meta.fragments);
 
     h.wave.textContent = w.wave;
     h.remaining.textContent = Math.max(w.remaining, 0);
@@ -6664,11 +7741,13 @@ class Game {
     // 熱ゲージ
     const heatRatio = p.heat / CONFIG.HEAT_MAX;
     h.heatFill.style.width = (heatRatio * 100).toFixed(1) + '%';
-    h.heatLabel.textContent = p.heatState === 'overclock'
-      ? 'OVERCLOCK ' + p.heatStateTimer.toFixed(1) + 's'
-      : p.heatState === 'overheat'
-        ? 'OVERHEAT ' + p.heatStateTimer.toFixed(1) + 's'
-        : 'HEAT ' + Math.round(heatRatio * 100) + '%';
+    h.heatLabel.textContent = p.heatState === 'super'
+      ? '★SUPER ' + p.heatStateTimer.toFixed(1) + 's'
+      : p.heatState === 'overclock'
+        ? 'OVERCLOCK ' + p.heatStateTimer.toFixed(1) + 's'
+        : p.heatState === 'overheat'
+          ? 'OVERHEAT ' + p.heatStateTimer.toFixed(1) + 's'
+          : 'HEAT ' + Math.round(heatRatio * 100) + '%';
 
     // 属性バッジ
     const el = this.activeElement();

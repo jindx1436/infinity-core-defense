@@ -1569,7 +1569,20 @@ html, body {
 
 .dev-note { margin-top: 8px; font-size: 9.5px; color: var(--text-dim); line-height: 1.5; }
 
-#fps { cursor: pointer; padding: 4px 8px; }
+/* HUDは pointer-events:none のため、タップを受けるには明示指定が必要 */
+#fps {
+  pointer-events: auto;
+  cursor: pointer;
+  padding: 10px 14px;      /* 指で押しやすいよう当たり判定を広げる */
+  margin: -10px -14px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+
+#fps:active {
+  color: var(--amber);
+  background: rgba(255, 194, 51, 0.15);
+}
 
 /* =========================================================
    第8段階: 属性コア / オーバークロック
@@ -1691,3 +1704,460 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   #heat-wrap.overclock #heat-bar { animation: none; }
 }
+
+/* =========================================================
+   第9段階: 属性解放 / 熟練度 / SUPER OVERCLOCK
+   ======================================================= */
+
+/* ---- NEW CORE UNLOCKED 演出 ---- */
+#overlay-core-unlock {
+  position: absolute;
+  inset: 0;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: radial-gradient(circle at center, rgba(3,5,10,0.85), rgba(3,5,10,0.4) 60%, transparent);
+  transition: opacity 0.4s ease;
+}
+
+#overlay-core-unlock.hidden { opacity: 0; }
+
+#core-unlock-inner { text-align: center; animation: core-rise 0.7s cubic-bezier(0.22,1,0.36,1); }
+
+@keyframes core-rise {
+  0%   { opacity: 0; transform: translateY(28px) scale(0.85); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+#core-unlock-label {
+  font-family: var(--font-num);
+  font-size: clamp(11px, 3vw, 15px);
+  letter-spacing: 7px;
+  color: var(--text);
+  opacity: 0.8;
+}
+
+#core-unlock-icon {
+  font-size: clamp(56px, 16vw, 96px);
+  line-height: 1.2;
+  margin: 10px 0;
+  animation: core-glow 1.4s ease-in-out infinite;
+}
+
+@keyframes core-glow {
+  0%, 100% { filter: drop-shadow(0 0 12px currentColor); transform: scale(1); }
+  50%      { filter: drop-shadow(0 0 34px currentColor); transform: scale(1.08); }
+}
+
+#core-unlock-name {
+  font-family: var(--font-num);
+  font-size: clamp(22px, 7vw, 38px);
+  font-weight: 700;
+  letter-spacing: 6px;
+  text-shadow: 0 0 20px currentColor;
+}
+
+#core-unlock-desc {
+  margin: 14px auto 0;
+  max-width: min(340px, 82vw);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+/* ---- 熱ゲージ: SUPER ---- */
+#heat-wrap.super #heat-bar {
+  border-color: var(--magenta);
+  animation: super-pulse 0.35s ease-in-out infinite;
+}
+
+#heat-wrap.super #heat-fill { background: linear-gradient(90deg, #ff2d95, #ffc233, #ff2d95); }
+
+#heat-wrap.super #heat-label {
+  color: var(--magenta);
+  text-shadow: 0 0 10px rgba(255, 45, 149, 1);
+}
+
+@keyframes super-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(255, 45, 149, 0.6); }
+  50%      { box-shadow: 0 0 30px rgba(255, 45, 149, 1); }
+}
+
+/* ---- オーバークロック情報カード ---- */
+.oc-card {
+  border: 1px solid rgba(255, 194, 51, 0.45);
+  border-radius: 6px;
+  padding: 11px 12px;
+  background: rgba(255, 194, 51, 0.05);
+}
+
+.oc-card.super { border-color: var(--magenta); background: rgba(255, 45, 149, 0.07); }
+
+.oc-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--amber);
+  margin-bottom: 8px;
+}
+
+.oc-card.super .oc-title { color: var(--magenta); text-shadow: 0 0 10px rgba(255,45,149,0.7); }
+
+.oc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 11px;
+  padding: 3px 0;
+}
+
+.oc-key { color: var(--text-dim); flex-shrink: 0; }
+.oc-val { font-family: var(--font-num); color: var(--cyan); text-align: right; }
+
+.oc-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+
+.element-section {
+  font-size: 11px;
+  letter-spacing: 3px;
+  color: var(--text-dim);
+  padding: 6px 2px 0;
+}
+
+/* ---- 属性カード拡張 ---- */
+.element-card.locked { opacity: 0.55; cursor: default; }
+
+.element-lv {
+  font-family: var(--font-num);
+  font-size: 11px;
+  padding: 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: 10px;
+}
+
+.element-cond {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--amber);
+  letter-spacing: 1px;
+}
+
+.element-cond-progress {
+  margin-top: 4px;
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.element-exp { margin-top: 8px; }
+
+.element-exp-bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.element-exp-fill { height: 100%; width: 0%; transition: width 0.3s ease; }
+
+.element-exp-text {
+  margin-top: 3px;
+  font-family: var(--font-num);
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.element-next {
+  font-family: var(--font-num);
+  font-size: 10.5px;
+  color: var(--amber);
+  margin-top: 3px;
+}
+
+.element-research {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(0, 229, 255, 0.18);
+}
+
+.element-research-title {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--text-dim);
+  margin-bottom: 6px;
+}
+
+.el-res-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.el-res-info { flex: 1; min-width: 0; }
+.el-res-name { font-size: 11.5px; }
+.el-res-val { font-family: var(--font-num); font-size: 10px; color: var(--text-dim); }
+
+.el-res-btn {
+  width: 76px;
+  flex-shrink: 0;
+  padding: 6px 2px;
+  background: rgba(255, 194, 51, 0.08);
+  border: 1px solid rgba(255, 194, 51, 0.6);
+  border-radius: 4px;
+  color: var(--amber);
+  font-family: var(--font-num);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.el-res-btn:active { transform: scale(0.95); }
+
+.el-res-btn.disabled {
+  border-color: rgba(109, 138, 163, 0.4);
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: default;
+}
+
+.element-select {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--text);
+  font-family: var(--font-main);
+  font-size: 12px;
+  letter-spacing: 2px;
+  cursor: pointer;
+}
+
+.element-select.disabled { cursor: default; background: transparent; border-color: currentColor; }
+
+@media (prefers-reduced-motion: reduce) {
+  #core-unlock-inner, #core-unlock-icon { animation: none; }
+  #heat-wrap.super #heat-bar { animation: none; }
+}
+
+/* =========================================================
+   Core Fragment / 属性ガイド / ツールチップ
+   ======================================================= */
+
+.currency-frag .currency-icon {
+  color: var(--purple);
+  text-shadow: 0 0 6px var(--purple);
+  font-size: 9px;
+  letter-spacing: -1px;
+}
+
+#element-frag {
+  margin-left: auto;
+  font-family: var(--font-num);
+  font-size: 13px;
+  color: var(--purple);
+  text-shadow: 0 0 8px rgba(165, 97, 255, 0.5);
+}
+
+/* ---- 移行のお知らせ ---- */
+.element-notice {
+  border: 1px solid rgba(255, 194, 51, 0.55);
+  background: rgba(255, 194, 51, 0.08);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.7;
+  color: var(--amber);
+}
+
+/* ---- おすすめバナー ---- */
+.element-rec {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.element-rec-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  margin-bottom: 5px;
+}
+
+.element-rec-reason { font-size: 11px; color: var(--text-dim); line-height: 1.7; }
+
+.element-rec-note {
+  margin-top: 6px;
+  font-size: 9.5px;
+  color: var(--text-dim);
+  opacity: 0.75;
+}
+
+.element-rec-badge {
+  font-size: 8.5px;
+  letter-spacing: 1px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(61, 255, 158, 0.15);
+  border: 1px solid rgba(61, 255, 158, 0.5);
+  color: var(--green);
+  white-space: nowrap;
+}
+
+/* ---- ガイド表示 ---- */
+.element-guide { margin-top: 7px; }
+
+.element-stars {
+  font-size: 12px;
+  letter-spacing: 1px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.element-arche { font-size: 10.5px; color: var(--text); opacity: 0.85; letter-spacing: 1px; }
+
+.element-guide-text {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.65;
+}
+
+/* ---- 「？」ボタン ---- */
+.element-help {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.element-help:active { transform: scale(0.9); }
+
+/* ---- 昇格・解放ボタン ---- */
+.element-levelup {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 9px;
+  background: rgba(165, 97, 255, 0.1);
+  border: 1px solid var(--purple);
+  border-radius: 5px;
+  color: var(--purple);
+  font-family: var(--font-main);
+  font-size: 12px;
+  letter-spacing: 1px;
+  cursor: pointer;
+}
+
+.element-levelup:active { transform: scale(0.98); }
+
+.element-levelup.disabled,
+.element-select.unlock.disabled {
+  border-color: rgba(109, 138, 163, 0.4);
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.02);
+  cursor: default;
+}
+
+.element-select.unlock {
+  border-color: var(--purple);
+  color: var(--purple);
+  background: rgba(165, 97, 255, 0.1);
+}
+
+/* ---- ツールチップ ---- */
+#overlay-tooltip {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(3, 5, 10, 0.82);
+  backdrop-filter: blur(4px);
+  padding: 20px;
+  transition: opacity 0.25s ease;
+}
+
+#overlay-tooltip.hidden { opacity: 0; pointer-events: none; }
+
+#tooltip-inner {
+  width: min(400px, 100%);
+  max-height: 82vh;
+  overflow-y: auto;
+  background: var(--panel-solid);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+
+#tooltip-head { display: flex; align-items: center; gap: 10px; }
+#tooltip-icon { font-size: 26px; }
+#tooltip-name { font-size: 17px; font-weight: 700; letter-spacing: 2px; }
+
+#btn-tooltip-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+#tooltip-arche {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--amber);
+  letter-spacing: 1px;
+}
+
+#tooltip-guide {
+  margin-top: 8px;
+  font-size: 11.5px;
+  line-height: 1.75;
+  color: var(--text-dim);
+}
+
+#tooltip-body { margin-top: 12px; }
+
+.tooltip-section {
+  font-size: 11px;
+  letter-spacing: 2px;
+  margin-top: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tooltip-section.merit { color: var(--green); }
+.tooltip-section.demerit { color: var(--red); }
+.tooltip-section.future { color: var(--text-dim); }
+
+.tooltip-list { margin: 7px 0 0 18px; padding: 0; }
+
+.tooltip-list li {
+  font-size: 11px;
+  line-height: 1.8;
+  color: var(--text);
+  opacity: 0.9;
+}
+
+.tooltip-section.future + .tooltip-list li { color: var(--text-dim); }

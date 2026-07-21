@@ -29,6 +29,10 @@
         <span class="currency-icon">◆</span>
         <span id="val-gem">0</span>
       </div>
+      <div class="currency-item currency-frag">
+        <span class="currency-icon">◆◆</span>
+        <span id="val-frag">0</span>
+      </div>
     </div>
 
     <!-- 中央上: Wave情報 -->
@@ -229,6 +233,7 @@
   <div id="elements-panel" class="side-panel closed">
     <div class="panel-header">
       <span class="panel-title">属性コア</span>
+      <span id="element-frag"><span id="val-element-frag">0</span>◆◆</span>
       <button id="btn-elements-close" class="panel-close">✕</button>
     </div>
     <div class="panel-note" id="elements-note"></div>
@@ -273,6 +278,7 @@
           <button class="dev-btn" data-dev="gem">+10K ◆</button>
           <button class="dev-btn" data-dev="shard">+50K ◈</button>
           <button class="dev-btn" data-dev="cash">+1B $</button>
+          <button class="dev-btn" data-dev="frag">+50 ◆◆</button>
           <button class="dev-btn" data-dev="unlockAll">全Tier解放</button>
           <button class="dev-btn danger" data-dev="reset">通貨をゼロに</button>
         </div>
@@ -289,6 +295,30 @@
       <h1 class="game-title">INFINITY<br>CORE DEFENSE</h1>
       <p class="game-sub">エネルギーコアを360°の脅威から防衛せよ</p>
       <button id="btn-start" class="neon-btn">起動する</button>
+    </div>
+  </div>
+
+  <!-- ===== 属性ツールチップ ===== -->
+  <div id="overlay-tooltip" class="hidden">
+    <div id="tooltip-inner">
+      <div id="tooltip-head">
+        <span id="tooltip-icon">◇</span>
+        <span id="tooltip-name">属性</span>
+        <button id="btn-tooltip-close">✕</button>
+      </div>
+      <div id="tooltip-arche"></div>
+      <div id="tooltip-guide"></div>
+      <div id="tooltip-body"></div>
+    </div>
+  </div>
+
+  <!-- ===== 新コア解放演出 ===== -->
+  <div id="overlay-core-unlock" class="hidden">
+    <div id="core-unlock-inner">
+      <div id="core-unlock-label">NEW CORE UNLOCKED</div>
+      <div id="core-unlock-icon">◇</div>
+      <div id="core-unlock-name">CORE</div>
+      <div id="core-unlock-desc"></div>
     </div>
   </div>
 
