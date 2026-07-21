@@ -74,8 +74,8 @@
       <button class="menu-btn" id="btn-gacha" title="ガチャ">
         <span class="menu-icon">✧</span><span class="menu-label">召喚</span>
       </button>
-      <button class="menu-btn menu-btn-locked" data-locked="ランキングは今後実装予定です" title="ランキング">
-        <span class="menu-icon">♛</span><span class="menu-label">順位</span>
+      <button class="menu-btn" id="btn-elements" title="属性コア">
+        <span class="menu-icon">◈</span><span class="menu-label">属性</span>
       </button>
       <button class="menu-btn" id="btn-settings" title="設定">
         <span class="menu-icon">⚙</span><span class="menu-label">設定</span>
@@ -88,6 +88,13 @@
         <div id="wall-bar" class="hidden"><div id="wall-bar-fill"></div></div>
         <div id="hp-bar"><div id="hp-bar-fill"></div></div>
         <div id="hp-text"><span id="val-hp">100</span> / <span id="val-hp-max">100</span></div>
+      </div>
+      <div id="heat-wrap">
+        <div id="heat-bar"><div id="heat-fill"></div></div>
+        <div id="heat-row">
+          <span id="heat-label">HEAT 0%</span>
+          <span id="element-badge">◇ ニュートラル</span>
+        </div>
       </div>
       <div id="stats-row">
         <div class="stat"><span class="stat-label">ATK</span><span id="val-atk">0</span></div>
@@ -124,6 +131,7 @@
       <button class="shop-tab active" data-category="attack">攻撃</button>
       <button class="shop-tab" data-category="defense">防御</button>
       <button class="shop-tab" data-category="utility">補助</button>
+      <button class="shop-tab" data-category="special">特殊</button>
     </div>
     <div id="shop-list"></div>
   </div>
@@ -217,6 +225,16 @@
     <div id="gacha-rates"></div>
   </div>
 
+  <!-- ===== 属性コアパネル ===== -->
+  <div id="elements-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">属性コア</span>
+      <button id="btn-elements-close" class="panel-close">✕</button>
+    </div>
+    <div class="panel-note" id="elements-note"></div>
+    <div id="elements-list" class="panel-list"></div>
+  </div>
+
   <!-- ===== 実績パネル ===== -->
   <div id="achievements-panel" class="side-panel closed">
     <div class="panel-header">
@@ -248,6 +266,19 @@
         <div id="start-wave-hint" class="start-wave-hint"></div>
       </div>
       <div id="settings-stats"></div>
+      <div id="dev-box" class="hidden">
+        <div class="dev-title">開発者メニュー</div>
+        <div class="dev-grid">
+          <button class="dev-btn" data-dev="coin">+100K ◎</button>
+          <button class="dev-btn" data-dev="gem">+10K ◆</button>
+          <button class="dev-btn" data-dev="shard">+50K ◈</button>
+          <button class="dev-btn" data-dev="cash">+1B $</button>
+          <button class="dev-btn" data-dev="unlockAll">全Tier解放</button>
+          <button class="dev-btn danger" data-dev="reset">通貨をゼロに</button>
+        </div>
+        <div class="dev-note">FPS表示を7回タップすると表示/非表示を切り替えられます。</div>
+      </div>
+
       <button id="btn-reset-save" class="settings-btn danger">セーブデータを初期化</button>
     </div>
   </div>

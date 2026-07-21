@@ -55,6 +55,13 @@ const CONFIG = Object.freeze({
   // 高速時に弾が敵をすり抜けるのを防ぐための上限。
   MAX_SUBSTEP: 0.02,
 
+  // オーバークロック（熱システム）
+  HEAT_MAX: 100,
+  HEAT_PER_SHOT: 4.0,         // 1射あたりの発熱
+  HEAT_DECAY: 4.0,            // 毎秒の自然冷却（攻撃を止めると下がる）
+  OVERCLOCK_DURATION: 6,      // 超強化状態の基本秒数
+  OVERHEAT_DURATION: 4,       // 反動で弱体化する秒数
+
   // LAB研究の所要時間の上限。青天井にすると高レベルが数百年になるため必須。
   LAB_MAX_DURATION: 48 * 3600,
 
@@ -135,6 +142,13 @@ const BASE_STATS = Object.freeze({
   // LAB（実時間研究・第6段階）で操作する項目
   offlineMul: 1,              // オフライン報酬の倍率
   gemFindMul: 1,              // Gem獲得量の倍率
+  // オーバークロック（第8段階）
+  heatGainMul: 1,             // 発熱量の倍率
+  heatBonusMul: 1,            // 熱による強化幅の倍率
+  overclockDuration: 0,       // 超強化状態の延長秒数
+  overheatReduction: 0,       // 弱体化時間の短縮秒数
+  // 属性コア（第8段階）
+  elementPower: 1,            // 属性効果の倍率
 });
 
 /* =========================================================
@@ -597,6 +611,47 @@ const UPGRADES = [
     valueText: (lv) => lv + '%',
   },
 
+  {
+    id: 'heatBonus', name: 'Heat Amplifier', category: 'attack',
+    tier: 3,
+    level: 0, maxLevel: 60, baseCost: 900, growth: 1.24,
+    description: '熱による強化幅が増加する',
+    effect(s, lv) { s.heatBonusMul += lv * 0.05; },
+    valueText: (lv) => 'x' + (1 + lv * 0.05).toFixed(2),
+  },
+  {
+    id: 'heatGain', name: 'Heat Generator', category: 'attack',
+    tier: 4,
+    level: 0, maxLevel: 40, baseCost: 2500, growth: 1.28,
+    description: '発熱量が増えオーバークロックしやすくなる',
+    effect(s, lv) { s.heatGainMul += lv * 0.05; },
+    valueText: (lv) => '+' + (lv * 5) + '%',
+  },
+  {
+    id: 'overclockDuration', name: 'Overclock Duration', category: 'attack',
+    tier: 5,
+    level: 0, maxLevel: 40, baseCost: 30000, growth: 1.32,
+    description: 'オーバークロックの持続時間が延びる',
+    effect(s, lv) { s.overclockDuration += lv * 0.25; },
+    valueText: (lv) => '+' + (lv * 0.25).toFixed(2) + 's',
+  },
+  {
+    id: 'overheatReduction', name: 'Coolant Purge', category: 'defense',
+    tier: 5,
+    level: 0, maxLevel: 30, baseCost: 30000, growth: 1.32,
+    description: 'オーバーヒートの時間が短縮される',
+    effect(s, lv) { s.overheatReduction += lv * 0.1; },
+    valueText: (lv) => '-' + (lv * 0.1).toFixed(1) + 's',
+  },
+  {
+    id: 'elementPower', name: 'Element Amplifier', category: 'special',
+    tier: 6,
+    level: 0, maxLevel: 60, baseCost: 200000, growth: 1.30,
+    description: '属性コアの効果が増幅される',
+    effect(s, lv) { s.elementPower += lv * 0.05; },
+    valueText: (lv) => 'x' + (1 + lv * 0.05).toFixed(2),
+  },
+
   /* ---------- 高Tier（第5段階で追加） ---------- */
   {
     id: 'damageMultiplier', name: 'Damage Multiplier', category: 'attack',
@@ -986,6 +1041,142 @@ const LAB_CATEGORIES = [
 ];
 
 /* ---------------------------------------------------------
+ * 属性コア
+ * ------------------------------------------------------- */
+
+/**
+ * 属性コア。周回開始時に選択し、戦い方そのものを変える。
+ *   stats   : 常時かかるステータス補正
+ *   onHit   : 弾が敵に当たったときの追加効果
+ *   onKill  : 敵を倒したときの追加効果
+ *   passive : 毎フレームの効果（引き寄せ等）
+ * 追加する場合はこの配列へオブジェクトを1つ足すだけでよい。
+ */
+const ELEMENTS = [
+  {
+    id: 'none', name: 'ニュートラル', icon: '◇', color: '#9fb4c7',
+    tagline: '癖のない標準構成',
+    desc: '特殊効果はないが、攻撃力とHPがわずかに高い。',
+    stats(s, p) { s.damageMul += 0.05 * p; s.hpMul += 0.05 * p; },
+    effectText: (p) => 'ダメージ +' + (5 * p).toFixed(0) + '% / HP +' + (5 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'fire', name: '炎', icon: '✹', color: '#ff7a3d',
+    tagline: '継続ダメージと爆発',
+    desc: '命中した敵を燃焼させ、燃焼中の敵を倒すと周囲へ爆発が広がる。',
+    stats(s, p) { s.damageMul += 0.08 * p; },
+    onHit(game, enemy, dmg, p) {
+      // 燃焼を付与。既に燃えていれば強い方で上書きする
+      const dps = dmg * 0.35 * p;
+      if (dps > enemy.burnDps) enemy.burnDps = dps;
+      enemy.burnTimer = Math.max(enemy.burnTimer, 3.0);
+    },
+    onKill(game, enemy, p) {
+      if (enemy.burnTimer <= 0) return;
+      enemy.burnTimer = 0;   // 同じ敵から二重に爆発しないようにする
+      const radius = 55 + 25 * p;
+      game.explode(enemy.x, enemy.y, radius, enemy.maxHp * 0.12 * p, '#ff7a3d');
+    },
+    effectText: (p) => '燃焼 与ダメの' + (35 * p).toFixed(0) + '%/秒 ・ 撃破時に爆発',
+  },
+  {
+    id: 'thunder', name: '雷', icon: '⚡', color: '#ffe14d',
+    tagline: '連鎖攻撃とスタン',
+    desc: '一定確率で近くの敵へ電撃が連鎖し、当たった敵を短時間動けなくする。',
+    stats(s, p) { s.critChance += 0.05 * p; },
+    onHit(game, enemy, dmg, p) {
+      if (Math.random() > 0.25 * p) return;
+      // 近傍の敵へ連鎖
+      const range = 130;
+      const rSq = range * range;
+      let chained = 0;
+      const limit = 2 + Math.floor(p);
+      for (let i = 0; i < game.enemies.length && chained < limit; i++) {
+        const e = game.enemies[i];
+        if (e === enemy || e.hp <= 0) continue;
+        const dx = e.x - enemy.x;
+        const dy = e.y - enemy.y;
+        if (dx * dx + dy * dy > rSq) continue;
+        game.damageEnemy(e, dmg * 0.5 * p, 0, true);
+        e.stunTimer = Math.max(e.stunTimer, 0.5 * p);
+        game.spawnLightning(enemy.x, enemy.y, e.x, e.y);
+        chained++;
+      }
+      enemy.stunTimer = Math.max(enemy.stunTimer, 0.35 * p);
+    },
+    effectText: (p) => (25 * p).toFixed(0) + '%で連鎖 ・ スタン ' + (0.35 * p).toFixed(2) + '秒',
+  },
+  {
+    id: 'ice', name: '氷', icon: '❄', color: '#7fd8ff',
+    tagline: '減速と凍結',
+    desc: '命中した敵の移動速度を下げ、重ねがけすると完全に凍結させる。',
+    stats(s, p) { s.critMultiplier += 0.15 * p; },
+    onHit(game, enemy, dmg, p) {
+      enemy.chill = Math.min(enemy.chill + 0.12 * p, 1);
+      enemy.chillTimer = 2.5;
+      if (enemy.chill >= 1 && enemy.freezeCd <= 0) {
+        enemy.freezeCd = 6;
+        enemy.stunTimer = Math.max(enemy.stunTimer, 1.2 * p);
+        enemy.chill = 0;
+        game.spawnParticles(enemy.x, enemy.y, 10, 120, 0.4, 3, '#7fd8ff');
+      }
+    },
+    effectText: (p) => '最大 ' + Math.min(60 * p, 80).toFixed(0) + '% 減速 ・ 蓄積で凍結',
+  },
+  {
+    id: 'gravity', name: '重力', icon: '◉', color: '#a561ff',
+    tagline: '引き寄せと集束',
+    desc: '敵を中心へ引き寄せて密集させ、密集した敵ほど受けるダメージが増える。',
+    stats(s, p) { s.range += 20 * p; },
+    passive(game, dt, p) {
+      // 射程の外側にいる敵をコアへ引き寄せる
+      const pull = 26 * p * dt;
+      for (let i = 0; i < game.enemies.length; i++) {
+        const e = game.enemies[i];
+        const dx = game.cx - e.x;
+        const dy = game.cy - e.y;
+        const d = Math.hypot(dx, dy) || 1;
+        if (d < 120) continue;
+        e.x += (dx / d) * pull;
+        e.y += (dy / d) * pull;
+      }
+    },
+    onHit(game, enemy, dmg, p) {
+      // 周囲の敵の数に応じて追加ダメージ
+      const rSq = 90 * 90;
+      let near = 0;
+      for (let i = 0; i < game.enemies.length; i++) {
+        const e = game.enemies[i];
+        const dx = e.x - enemy.x;
+        const dy = e.y - enemy.y;
+        if (dx * dx + dy * dy <= rSq) near++;
+      }
+      if (near <= 1) return;
+      game.damageEnemy(enemy, dmg * Math.min(near - 1, 6) * 0.12 * p, 0, false);
+    },
+    effectText: (p) => '引き寄せ ・ 密集で最大 +' + (72 * p).toFixed(0) + '% ダメージ',
+  },
+  {
+    id: 'economy', name: '経済', icon: '$', color: '#3dff9e',
+    tagline: '資源収集特化',
+    desc: '戦闘能力は伸びないが、CashとCoinの獲得量が大きく増える。',
+    stats(s, p) {
+      s.cashBonus += 0.6 * p;
+      s.coinBonus += 0.3 * p;
+      s.interest += 0.02 * p;
+    },
+    effectText: (p) => 'Cash +' + (60 * p).toFixed(0) + '% / Coin +' + (30 * p).toFixed(0) + '%',
+  },
+];
+
+function elementById(id) {
+  for (let i = 0; i < ELEMENTS.length; i++) {
+    if (ELEMENTS[i].id === id) return ELEMENTS[i];
+  }
+  return ELEMENTS[0];
+}
+
+/* ---------------------------------------------------------
  * モジュール（装備システム）
  * ------------------------------------------------------- */
 
@@ -1276,6 +1467,7 @@ const SHOP_CATEGORIES = [
   { id: 'attack', label: '攻撃' },
   { id: 'defense', label: '防御' },
   { id: 'utility', label: '補助' },
+  { id: 'special', label: '特殊' },
 ];
 
 const BUY_MULTIPLIERS = [1, 10, 100, 'MAX'];
@@ -1351,7 +1543,7 @@ function createModule(blueprint, rarity) {
 }
 
 /** BASE_STATS へ永続研究とLAB研究の効果を適用した値を返す（周回開始時の土台） */
-function computeResearchStats(equippedModules) {
+function computeResearchStats(equippedModules, elementId) {
   const s = Object.assign({}, BASE_STATS);
   for (let i = 0; i < RESEARCH.length; i++) {
     const r = RESEARCH[i];
@@ -1366,6 +1558,11 @@ function computeResearchStats(equippedModules) {
     for (let i = 0; i < equippedModules.length; i++) {
       applyModuleToStats(s, equippedModules[i]);
     }
+  }
+  // 属性コアの常時補正（elementPower の確定後に適用する）
+  if (elementId) {
+    const el = elementById(elementId);
+    if (el.stats) el.stats(s, s.elementPower);
   }
   return s;
 }
@@ -1449,7 +1646,11 @@ class Pool {
   acquire() {
     return this._free.length > 0 ? this._free.pop() : this._factory();
   }
-  release(obj) { this._free.push(obj); }
+  release(obj) {
+    // 削除インデックスのズレ等で undefined が混ざるとプールが壊れるため弾く
+    if (!obj) return;
+    this._free.push(obj);
+  }
 }
 
 function swapRemove(arr, index) {
@@ -1521,6 +1722,7 @@ class SaveManager {
       playTime: 0,
       soundOn: true,
       selectedStartWave: 1,
+      devMode: false,           // 開発者メニューの表示
       unlockedTiers: {},        // 解放演出を出し終えたTier
       favorites: {},            // ショップのお気に入り
       gameSpeed: 1,             // 選択中のゲームスピード
@@ -1538,6 +1740,8 @@ class SaveManager {
       skins: ['skin_default'],  // 所持スキン
       activeSkin: 'skin_default',
       gachaPulls: 0,            // ガチャ回数（実績・演出用）
+      activeElement: 'none',    // 使用中の属性コア
+      pendingElement: 'none',   // 次の周回から使う属性コア
     };
   }
 
@@ -1712,6 +1916,19 @@ class Sfx {
     this._tone(880, t + 0.09, 0.10, 'triangle', 0.07);
     this._tone(1320, t + 0.18, 0.22, 'triangle', 0.07);
   }
+  overclock() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(440, t, 0.5, 'sawtooth', 0.09, 1760);
+    this._tone(880, t + 0.08, 0.4, 'square', 0.06, 1320);
+    this._noise(t, 0.35, 0.08, 5000);
+  }
+  overheat() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(660, t, 0.5, 'sawtooth', 0.08, 130);
+    this._noise(t, 0.4, 0.06, 700);
+  }
   gachaCommon() {
     if (!this.enabled || !this.ctx) return;
     const t = this.ctx.currentTime;
@@ -1842,6 +2059,13 @@ class Enemy {
     this.fireTimer = 0;
     this.spawnAnim = 0;      // 出現時のスケールアニメーション
     this.wallContactCd = 0;  // 壁の反射ダメージのクールダウン
+    // 属性コアによる状態異常
+    this.burnTimer = 0;      // 燃焼の残り時間
+    this.burnDps = 0;        // 燃焼の毎秒ダメージ
+    this.stunTimer = 0;      // 行動不能の残り時間
+    this.chill = 0;          // 冷却の蓄積（0〜1）
+    this.chillTimer = 0;
+    this.freezeCd = 0;       // 凍結の再発クールダウン
   }
   init(type, wave, x, y, speedMul) {
     this.type = type;
@@ -1862,6 +2086,12 @@ class Enemy {
     this.fireTimer = type.fireInterval ? type.fireInterval * 0.6 : 0;
     this.spawnAnim = 0.4;
     this.wallContactCd = 0;
+    this.burnTimer = 0;
+    this.burnDps = 0;
+    this.stunTimer = 0;
+    this.chill = 0;
+    this.chillTimer = 0;
+    this.freezeCd = 0;
   }
 
   /**
@@ -1891,9 +2121,16 @@ class Enemy {
       }
     }
 
+    // スタン中は停止、冷却中は減速（最大80%まで）
+    if (this.stunTimer > 0) {
+      this.stunTimer -= dt;
+      moving = false;
+    }
+    const slow = this.chillTimer > 0 ? 1 - Math.min(this.chill * 0.8, 0.8) : 1;
+
     if (moving) {
-      this.x += (dx / dist) * this.speed * dt;
-      this.y += (dy / dist) * this.speed * dt;
+      this.x += (dx / dist) * this.speed * slow * dt;
+      this.y += (dy / dist) * this.speed * slow * dt;
     }
 
     if (this.hitFlash > 0) this.hitFlash -= dt;
@@ -1903,6 +2140,12 @@ class Enemy {
       this.armorBreakTimer -= dt;
       if (this.armorBreakTimer <= 0) this.dmgTakenMul = 1;
     }
+    if (this.chillTimer > 0) {
+      this.chillTimer -= dt;
+      if (this.chillTimer <= 0) this.chill = 0;
+    }
+    if (this.freezeCd > 0) this.freezeCd -= dt;
+
     this.wobble += dt * 4;
     this.rotation += dt * (this.isBoss ? 0.4 : 1.2);
     return dist;
@@ -2128,6 +2371,11 @@ class Player {
     // ガーリック（DoTの適用間隔）
     this.garlicTimer = 0;
 
+    // オーバークロック（熱）
+    this.heat = 0;
+    this.heatState = 'normal';   // 'normal' | 'overclock' | 'overheat'
+    this.heatStateTimer = 0;
+
     this._targetBuf = [];
     this._targetDist = [];
     this.recalc();
@@ -2146,7 +2394,10 @@ class Player {
 
     // 永続研究・LAB・装備モジュールを適用した値を土台とし、
     // その上に周回内アップグレードを乗せる
-    const s = computeResearchStats(this.game.equippedModules());
+    const s = computeResearchStats(
+      this.game.equippedModules(),
+      this.game.meta ? this.game.meta.activeElement : 'none'
+    );
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
       if (u.level > 0) u.effect(s, u.level);
@@ -2166,8 +2417,74 @@ class Player {
     if (this.wallHp > this.maxWallHp) this.wallHp = this.maxWallHp;
   }
 
+  /** 熱による現在の補正値をまとめて返す */
+  heatBonus() {
+    const s = this.stats;
+    if (this.heatState === 'overclock') {
+      return { aspd: 2.2, dmg: 1.9, crit: 0.25 * s.heatBonusMul };
+    }
+    if (this.heatState === 'overheat') {
+      return { aspd: 0.55, dmg: 0.7, crit: 0 };
+    }
+    // 通常時は熱の割合に比例して緩やかに上昇する
+    const r = this.heat / CONFIG.HEAT_MAX;
+    const m = s.heatBonusMul;
+    return {
+      aspd: 1 + r * 0.55 * m,
+      dmg: 1 + r * 0.40 * m,
+      crit: r * 0.12 * m,
+    };
+  }
+
+  /** 発熱と状態遷移 */
+  updateHeat(dt) {
+    const s = this.stats;
+
+    if (this.heatState === 'overclock') {
+      this.heatStateTimer -= dt;
+      this.heat = CONFIG.HEAT_MAX;
+      if (this.heatStateTimer <= 0) {
+        this.heatState = 'overheat';
+        this.heatStateTimer = Math.max(
+          CONFIG.OVERHEAT_DURATION - s.overheatReduction, 0.8
+        );
+        this.heat = 0;
+        this.game.onOverheatStart();
+      }
+      return;
+    }
+
+    if (this.heatState === 'overheat') {
+      this.heatStateTimer -= dt;
+      if (this.heatStateTimer <= 0) {
+        this.heatState = 'normal';
+        this.game.onOverheatEnd();
+      }
+      return;
+    }
+
+    // 通常時は自然冷却
+    if (this.heat > 0) {
+      this.heat = Math.max(this.heat - CONFIG.HEAT_DECAY * dt, 0);
+    }
+  }
+
+  /** 攻撃時の発熱。100%に達したらオーバークロックへ移行する */
+  addHeat(shots) {
+    if (this.heatState !== 'normal') return;
+    const s = this.stats;
+    this.heat += CONFIG.HEAT_PER_SHOT * shots * s.heatGainMul;
+    if (this.heat < CONFIG.HEAT_MAX) return;
+
+    this.heat = CONFIG.HEAT_MAX;
+    this.heatState = 'overclock';
+    this.heatStateTimer = CONFIG.OVERCLOCK_DURATION + s.overclockDuration;
+    this.game.onOverclockStart();
+  }
+
   update(dt) {
     const s = this.stats;
+    this.updateHeat(dt);
     this.rotation += dt * 0.5;
     this.pulse += dt * 2.4;
     if (this.hurtFlash > 0) this.hurtFlash -= dt;
@@ -2190,7 +2507,7 @@ class Player {
       const fired = this.tryAttack();
       if (fired) {
         const rate = this.rapidFireTimer > 0 ? CONFIG.RAPID_FIRE_RATE : 1;
-        this.attackCooldown = s.attackInterval * rate;
+        this.attackCooldown = s.attackInterval * rate / this.heatBonus().aspd;
       } else {
         this.attackCooldown = 0;
       }
@@ -2230,12 +2547,14 @@ class Player {
     if (s.omniStrikeChance > 0 && Math.random() < s.omniStrikeChance) {
       const all = this.findNearestTargets(64);
       for (let i = 0; i < all.length; i++) this.fireAt(all[i]);
+      this.addHeat(all.length);
       this.game.flashScreen(0.1, '#8df3ff');
       this.game.sfx.laser();
       return true;
     }
 
     for (let i = 0; i < targets.length; i++) this.fireAt(targets[i]);
+    this.addHeat(targets.length);
     this.game.sfx.laser();
     return true;
   }
@@ -2280,9 +2599,10 @@ class Player {
     const g = this.game;
     const s = this.stats;
 
+    const heat = this.heatBonus();
     let critTier = 0;
-    let dmg = s.damage;
-    if (Math.random() < s.critChance) {
+    let dmg = s.damage * heat.dmg;
+    if (Math.random() < s.critChance + heat.crit) {
       critTier = 1;
       dmg *= s.critMultiplier;
       if (Math.random() < s.superCritChance) {
@@ -2936,8 +3256,14 @@ class Research {
     this.listEl.textContent = '';
     this.itemEls.clear();
 
-    for (let i = 0; i < RESEARCH.length; i++) {
-      const r = RESEARCH[i];
+    // 解放される順（Tier昇順）に並べる。解放済みが必ず前へ来る
+    const sorted = RESEARCH.slice().sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      return RESEARCH.indexOf(a) - RESEARCH.indexOf(b);
+    });
+
+    for (let i = 0; i < sorted.length; i++) {
+      const r = sorted[i];
       const unlocked = this.game.isUnlocked(r);
 
       const root = document.createElement('div');
@@ -3149,9 +3475,16 @@ class Lab {
     this.listEl.textContent = '';
     this.itemEls.clear();
 
-    for (let i = 0; i < LAB_RESEARCH.length; i++) {
-      const r = LAB_RESEARCH[i];
-      if (r.category !== this.activeCategory) continue;
+    // 解放される順（Tier昇順）に並べる
+    const sorted = LAB_RESEARCH
+      .filter((r) => r.category === this.activeCategory)
+      .sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        return LAB_RESEARCH.indexOf(a) - LAB_RESEARCH.indexOf(b);
+      });
+
+    for (let i = 0; i < sorted.length; i++) {
+      const r = sorted[i];
       const unlocked = g.isUnlocked(r);
 
       const root = document.createElement('div');
@@ -3799,6 +4132,112 @@ class Gacha {
 }
 
 /* =========================================================
+ * 9.59 属性コアパネル（ELEMENTS配列から自動生成）
+ * ======================================================= */
+
+class Elements {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('elements-panel');
+    this.listEl = document.getElementById('elements-list');
+    this.noteEl = document.getElementById('elements-note');
+    this.isOpen = false;
+
+    document.getElementById('btn-elements')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-elements-close')
+      .addEventListener('click', () => this.close());
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.build();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  build() {
+    const g = this.game;
+    const power = g.elementPower();
+    this.listEl.textContent = '';
+
+    this.noteEl.textContent = g.running
+      ? '戦闘中の変更は次の周回から反映されます。'
+      : '属性を選ぶと戦い方が大きく変わります。';
+
+    for (let i = 0; i < ELEMENTS.length; i++) {
+      const el = ELEMENTS[i];
+      const active = g.meta.activeElement === el.id;
+      const pending = g.meta.pendingElement === el.id && !active;
+
+      const card = document.createElement('div');
+      card.className = 'element-card' +
+        (active ? ' active' : '') + (pending ? ' pending' : '');
+      card.style.borderColor = el.color;
+
+      const head = document.createElement('div');
+      head.className = 'element-head';
+
+      const icon = document.createElement('span');
+      icon.className = 'element-icon';
+      icon.textContent = el.icon;
+      icon.style.color = el.color;
+
+      const name = document.createElement('span');
+      name.className = 'element-name';
+      name.textContent = el.name;
+      name.style.color = el.color;
+
+      const tag = document.createElement('span');
+      tag.className = 'element-tag';
+      tag.textContent = el.tagline;
+
+      head.appendChild(icon);
+      head.appendChild(name);
+      head.appendChild(tag);
+
+      const desc = document.createElement('div');
+      desc.className = 'element-desc';
+      desc.textContent = el.desc;
+
+      const effect = document.createElement('div');
+      effect.className = 'element-effect';
+      effect.textContent = el.effectText(power);
+
+      const state = document.createElement('div');
+      state.className = 'element-state';
+      state.textContent = active ? '使用中' : pending ? '次の周回から適用' : '選択する';
+      if (active) state.style.color = el.color;
+
+      card.appendChild(head);
+      card.appendChild(desc);
+      card.appendChild(effect);
+      card.appendChild(state);
+
+      if (!active) {
+        card.addEventListener('click', () => {
+          g.sfx.unlock();
+          g.selectElement(el.id);
+          g.sfx.buy();
+          g.showToast(
+            g.running
+              ? el.name + ' を次の周回に設定しました'
+              : el.name + ' を装填しました'
+          );
+          this.build();
+        });
+      }
+      this.listEl.appendChild(card);
+    }
+  }
+}
+
+/* =========================================================
  * 9.6 実績パネル（ACHIEVEMENTS配列から自動生成）
  * ======================================================= */
 
@@ -3906,6 +4345,16 @@ class Settings {
     this.resetBtn = document.getElementById('btn-reset-save');
     this.resetBtn.addEventListener('click', () => this.onResetClick());
 
+    // 開発者メニュー（FPS表示の7回タップで解放）
+    this.devBox = document.getElementById('dev-box');
+    document.querySelectorAll('.dev-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        game.devGrant(btn.dataset.dev);
+        game.showToast('開発者: ' + btn.textContent, 1600);
+        this.refresh();
+      });
+    });
+
     // 開始Wave の選択（研究「戦域転送」で解放した範囲内）
     this.startWaveVal = document.getElementById('start-wave-val');
     this.startWaveHint = document.getElementById('start-wave-hint');
@@ -3977,6 +4426,7 @@ class Settings {
     const m = g.meta;
 
     this.soundBtn.textContent = 'サウンド: ' + (g.sfx.enabled ? 'ON' : 'OFF');
+    this.devBox.classList.toggle('hidden', !g.meta.devMode);
 
     const maxStart = Math.max(1, g.player.stats.startWave);
     if (g.meta.selectedStartWave > maxStart) g.meta.selectedStartWave = maxStart;
@@ -4038,6 +4488,7 @@ class Game {
     this.mines = [];
     this.shockwaves = [];
     this.packages = [];
+    this.lightnings = [];
 
     // プール
     this.enemyPool = new Pool(() => new Enemy(), 80);
@@ -4100,11 +4551,13 @@ class Game {
     this.lab = new Lab(this);
     this.modules = new Modules(this);
     this.gacha = new Gacha(this);
+    this.elements = new Elements(this);
     this.achievements = new Achievements(this);
     this.settings = new Settings(this);
     this.panelList = [
       this.shop, this.codex, this.research, this.lab,
-      this.modules, this.gacha, this.achievements, this.settings,
+      this.modules, this.gacha, this.elements,
+      this.achievements, this.settings,
     ];
     this.bindEvents();
 
@@ -4161,6 +4614,10 @@ class Game {
       fps: $('fps'),
       toast: $('toast'),
       speedBtn: $('btn-speed'),
+      heatWrap: $('heat-wrap'),
+      heatFill: $('heat-fill'),
+      heatLabel: $('heat-label'),
+      elementBadge: $('element-badge'),
       speedVal: $('val-speed'),
       offlineOverlay: $('overlay-offline'),
       offlineTime: $('offline-time'),
@@ -4184,6 +4641,11 @@ class Game {
       .addEventListener('click', () => { this.sfx.unlock(); this.restart(); });
 
     this.hud.speedBtn.addEventListener('click', () => this.cycleGameSpeed());
+
+    // 開発者モード: FPS表示を3秒以内に7回タップすると解放される
+    this._devTaps = 0;
+    this._devTapTime = 0;
+    this.hud.fps.addEventListener('click', () => this.onDevTap());
 
     document.getElementById('btn-offline-close')
       .addEventListener('click', () => {
@@ -4742,6 +5204,136 @@ class Game {
     }
   }
 
+  /* ---------- 属性コア ---------- */
+
+  activeElement() {
+    return elementById(this.meta.activeElement);
+  }
+
+  /** 属性効果の強さ（研究やモジュールで伸ばせる） */
+  elementPower() {
+    return this.player ? this.player.stats.elementPower : 1;
+  }
+
+  /** 次の周回から使う属性を選ぶ */
+  selectElement(id) {
+    this.meta.pendingElement = id;
+    if (!this.running) {
+      this.meta.activeElement = id;
+      if (this.player) this.player.recalc();
+    }
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+  }
+
+  /** 電撃の描画用エフェクト */
+  spawnLightning(x1, y1, x2, y2) {
+    this.lightnings.push({ x1, y1, x2, y2, life: 0.18 });
+  }
+
+  updateLightnings(dt) {
+    for (let i = this.lightnings.length - 1; i >= 0; i--) {
+      this.lightnings[i].life -= dt;
+      if (this.lightnings[i].life <= 0) swapRemove(this.lightnings, i);
+    }
+  }
+
+  /** 燃焼などの継続効果。0.2秒間隔で適用して負荷を抑える */
+  updateStatusEffects(dt) {
+    this.burnTimer = (this.burnTimer || 0) + dt;
+    if (this.burnTimer < 0.2) return;
+    const step = this.burnTimer;
+    this.burnTimer = 0;
+
+    for (let i = this.enemies.length - 1; i >= 0; i--) {
+      const e = this.enemies[i];
+      if (!e || e.burnTimer <= 0) continue;
+      e.burnTimer -= step;
+      this.damageEnemy(e, e.burnDps * step, 0, false);
+      if (Math.random() < 0.3) {
+        this.spawnParticles(e.x, e.y, 1, 40, 0.3, 2, '#ff7a3d');
+      }
+    }
+  }
+
+  /* ---------- オーバークロック ---------- */
+
+  onOverclockStart() {
+    this.flashScreen(0.28, '#ffc233');
+    this.shakeScreen(8);
+    this.sfx.overclock();
+    this.showToast('OVERCLOCK', 1600);
+    this.hud.heatWrap.classList.add('overclock');
+    this.hud.heatWrap.classList.remove('overheat');
+  }
+
+  onOverheatStart() {
+    this.flashScreen(0.2, '#ff3b5c');
+    this.sfx.overheat();
+    this.hud.heatWrap.classList.remove('overclock');
+    this.hud.heatWrap.classList.add('overheat');
+  }
+
+  onOverheatEnd() {
+    this.hud.heatWrap.classList.remove('overheat');
+  }
+
+  /* ---------- 開発者モード ---------- */
+
+  onDevTap() {
+    const now = Date.now();
+    if (now - this._devTapTime > 3000) this._devTaps = 0;
+    this._devTapTime = now;
+    this._devTaps++;
+
+    if (this._devTaps < 7) {
+      // 4回目以降は残り回数を知らせる
+      if (this._devTaps >= 4) {
+        this.showToast('あと ' + (7 - this._devTaps) + ' 回', 1200);
+      }
+      return;
+    }
+
+    this._devTaps = 0;
+    this.meta.devMode = !this.meta.devMode;
+    this.requestSave();
+    this.flushSave();
+    this.settings.refresh();
+    this.showToast(
+      this.meta.devMode
+        ? '開発者メニューを有効にしました（設定画面）'
+        : '開発者メニューを無効にしました',
+      2600
+    );
+    this.sfx.unlockTier();
+  }
+
+  /** 開発者メニューの操作 */
+  devGrant(kind) {
+    if (kind === 'coin') this.meta.coin += 100000;
+    else if (kind === 'gem') this.meta.gem += 10000;
+    else if (kind === 'shard') this.meta.shards += 50000;
+    else if (kind === 'cash') this.addCash(1e9);
+    else if (kind === 'unlockAll') {
+      // 全Tierを解放した状態にする（到達Wave記録を引き上げる）
+      const last = UPGRADE_TIERS[UPGRADE_TIERS.length - 1].requiredWave;
+      if (this.meta.bestWave < last) this.meta.bestWave = last;
+      this.checkTierUnlocks();
+      this.shop.buildList();
+      this.research.build();
+      this.lab.build();
+    } else if (kind === 'reset') {
+      this.meta.coin = 0;
+      this.meta.gem = 0;
+      this.meta.shards = 0;
+    }
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    this.sfx.buy();
+  }
+
   /* ---------- 通貨 ---------- */
 
   addCash(amount) {
@@ -4848,6 +5440,16 @@ class Game {
 
   /** 周回開始時の共通処理（研究の初期資金・開始Waveを適用） */
   beginRun() {
+    // 選択中の属性を周回開始時に確定させる
+    if (this.meta.pendingElement && this.meta.pendingElement !== this.meta.activeElement) {
+      this.meta.activeElement = this.meta.pendingElement;
+      this.player.recalc();
+    }
+    // 熱をリセット
+    this.player.heat = 0;
+    this.player.heatState = 'normal';
+    this.hud.heatWrap.classList.remove('overclock', 'overheat');
+
     const s = this.player.stats;
     this.cash = s.startingCash + this.meta.pendingCash;
     this.meta.pendingCash = 0;
@@ -4910,6 +5512,7 @@ class Game {
     this.releaseAll(this.mines, this.minePool);
     this.releaseAll(this.shockwaves, this.shockwavePool);
     this.releaseAll(this.packages, this.packagePool);
+    this.lightnings.length = 0;
 
     this.dps = 0;
     this.dpsAccum = 0;
@@ -5109,6 +5712,13 @@ class Game {
     this.updatePackages(dt);
     this.updateParticles(dt);
     this.updateDamageNumbers(dt);
+    this.updateLightnings(dt);
+    this.updateStatusEffects(dt);
+
+    // 属性コアの常時効果
+    const el = this.activeElement();
+    if (el.passive) el.passive(this, dt, this.elementPower());
+
     this.shop.update(dt);
     this.lab.update(dt);
 
@@ -5135,10 +5745,13 @@ class Game {
 
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
+      if (!e) continue;
       const dist = e.update(dt, this);
 
       // 壁またはコアへの接触
       if (dist <= barrier + e.size) {
+        // 壁の反射ダメージや属性の連鎖爆発でこの敵自身が倒される場合があるため、
+        // ダメージ処理のあとに改めて配列の位置を取り直す。
         this.player.takeDamage(e.atk, e);
         this.spawnParticles(e.x, e.y, 8, 140, 0.3, 3, e.type.color);
         this.sfx.explosion();
@@ -5149,9 +5762,15 @@ class Game {
           e.x = this.cx + Math.cos(ang) * (barrier + e.size + 40);
           e.y = this.cy + Math.sin(ang) * (barrier + e.size + 40);
         } else {
-          this.waveManager.killed++;
-          this.enemyPool.release(swapRemove(this.enemies, i));
+          const idx = this.enemies.indexOf(e);
+          if (idx !== -1) {
+            this.waveManager.killed++;
+            this.enemyPool.release(swapRemove(this.enemies, idx));
+          }
         }
+
+        // 連鎖で配列が大きく縮んだ場合にインデックスを追従させる
+        if (i > this.enemies.length) i = this.enemies.length;
       }
     }
   }
@@ -5263,6 +5882,12 @@ class Game {
       this.sfx.hit();
     }
 
+    // ---- 属性コアの命中効果 ----
+    const el = this.activeElement();
+    if (el.onHit && enemy.hp > 0) {
+      el.onHit(this, enemy, dmg, this.elementPower());
+    }
+
     // ---- Critical Chain: クリティカル時の追撃 ----
     if (projectile.critTier > 0 && s.critChainChance > 0 &&
         Math.random() < s.critChainChance) {
@@ -5307,6 +5932,7 @@ class Game {
    * showNumber=false のDoT等はダメージ数字を出さず描画負荷を抑える。
    */
   damageEnemy(enemy, amount, critTier, showNumber) {
+    if (!enemy || enemy.hp <= 0) return;
     let dmg = amount * enemy.dmgTakenMul;
     if (enemy.isBoss) dmg *= this.player.stats.bossDamageMul;
     enemy.hp -= dmg;
@@ -5349,6 +5975,17 @@ class Game {
 
     const tid = enemy.type.id;
     this.killsByType[tid] = (this.killsByType[tid] || 0) + 1;
+
+    // 属性の撃破時効果。爆発が別の敵を巻き込んで無限連鎖しないよう
+    // 連鎖の深さを制限する（3段まで）。
+    const el = this.activeElement();
+    if (el.onKill) {
+      this._killDepth = (this._killDepth || 0) + 1;
+      if (this._killDepth <= 3) {
+        el.onKill(this, enemy, this.elementPower());
+      }
+      this._killDepth--;
+    }
 
     if (enemy.isBoss) {
       this.onBossDefeat(enemy);
@@ -5401,6 +6038,7 @@ class Game {
 
       for (let i = this.enemies.length - 1; i >= 0; i--) {
         const e = this.enemies[i];
+        if (!e) continue;
         const dx = e.x - ox;
         const dy = e.y - oy;
         const r = e.size + CONFIG.ORB_SIZE;
@@ -5475,6 +6113,7 @@ class Game {
     const rSq = radius * radius;
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
+      if (!e) continue;
       const dx = e.x - x;
       const dy = e.y - y;
       if (dx * dx + dy * dy <= rSq) this.damageEnemy(e, damage, 0, true);
@@ -5503,6 +6142,7 @@ class Game {
     const rSq = CONFIG.GARLIC_RADIUS * CONFIG.GARLIC_RADIUS;
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
+      if (!e) continue;
       const dx = e.x - this.cx;
       const dy = e.y - this.cy;
       if (dx * dx + dy * dy <= rSq) this.damageEnemy(e, amount, 0, false);
@@ -5595,6 +6235,7 @@ class Game {
     this.drawEnemies(ctx);
     this.drawEnemyProjectiles(ctx);
     this.drawProjectiles(ctx);
+    this.drawLightnings(ctx);
     this.drawShockwaves(ctx);
     this.drawPackages(ctx);
     this.drawParticles(ctx);
@@ -5713,6 +6354,33 @@ class Game {
     ctx.shadowBlur = 0;
   }
 
+  drawLightnings(ctx) {
+    if (this.lightnings.length === 0) return;
+    ctx.save();
+    ctx.strokeStyle = '#ffe14d';
+    ctx.shadowColor = '#ffe14d';
+    ctx.shadowBlur = 12;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < this.lightnings.length; i++) {
+      const l = this.lightnings[i];
+      ctx.globalAlpha = Math.max(l.life / 0.18, 0);
+      // ジグザグに折れた線で電撃らしく見せる
+      ctx.beginPath();
+      ctx.moveTo(l.x1, l.y1);
+      const segs = 4;
+      for (let k = 1; k < segs; k++) {
+        const t = k / segs;
+        const mx = l.x1 + (l.x2 - l.x1) * t + (Math.random() - 0.5) * 16;
+        const my = l.y1 + (l.y2 - l.y1) * t + (Math.random() - 0.5) * 16;
+        ctx.lineTo(mx, my);
+      }
+      ctx.lineTo(l.x2, l.y2);
+      ctx.stroke();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
   drawShockwaves(ctx) {
     for (let i = 0; i < this.shockwaves.length; i++) {
       const w = this.shockwaves[i];
@@ -5792,6 +6460,28 @@ class Game {
         ctx.lineTo(this.cx, this.cy);
         ctx.stroke();
         ctx.setLineDash([]);
+      }
+
+      // 状態異常の表示
+      if (e.burnTimer > 0) {
+        ctx.strokeStyle = 'rgba(255, 122, 61, 0.8)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 4, 0, TAU);
+        ctx.stroke();
+      }
+      if (e.chillTimer > 0 && e.chill > 0) {
+        ctx.strokeStyle = 'rgba(127, 216, 255, ' + (0.3 + e.chill * 0.6) + ')';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 6, -Math.PI / 2, -Math.PI / 2 + TAU * e.chill);
+        ctx.stroke();
+      }
+      if (e.stunTimer > 0) {
+        ctx.fillStyle = 'rgba(255, 225, 77, 0.9)';
+        ctx.beginPath();
+        ctx.arc(e.x, y - size - 8, 2.5, 0, TAU);
+        ctx.fill();
       }
 
       // アーマーブレイク表示
@@ -5970,6 +6660,20 @@ class Game {
       h.bossHpText.textContent =
         formatNumber(Math.ceil(boss.hp)) + ' / ' + formatNumber(Math.ceil(boss.maxHp));
     }
+
+    // 熱ゲージ
+    const heatRatio = p.heat / CONFIG.HEAT_MAX;
+    h.heatFill.style.width = (heatRatio * 100).toFixed(1) + '%';
+    h.heatLabel.textContent = p.heatState === 'overclock'
+      ? 'OVERCLOCK ' + p.heatStateTimer.toFixed(1) + 's'
+      : p.heatState === 'overheat'
+        ? 'OVERHEAT ' + p.heatStateTimer.toFixed(1) + 's'
+        : 'HEAT ' + Math.round(heatRatio * 100) + '%';
+
+    // 属性バッジ
+    const el = this.activeElement();
+    h.elementBadge.textContent = el.icon + ' ' + el.name;
+    h.elementBadge.style.color = el.color;
 
     h.atk.textContent = formatNumber(p.stats.damage);
     h.aspd.textContent = (1 / p.stats.attackInterval).toFixed(2);

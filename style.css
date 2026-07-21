@@ -1532,3 +1532,162 @@ html, body {
   .gacha-card { transition: opacity 0.2s ease; transform: none; }
   .gacha-card.revealed { transform: none; animation: none; }
 }
+
+/* ---- 開発者メニュー ---- */
+#dev-box {
+  border: 1px dashed rgba(255, 194, 51, 0.5);
+  border-radius: 6px;
+  padding: 10px;
+  background: rgba(255, 194, 51, 0.04);
+}
+
+#dev-box.hidden { display: none; }
+
+.dev-title {
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--amber);
+  margin-bottom: 8px;
+}
+
+.dev-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+
+.dev-btn {
+  padding: 9px 4px;
+  background: rgba(255, 194, 51, 0.08);
+  border: 1px solid rgba(255, 194, 51, 0.6);
+  border-radius: 4px;
+  color: var(--amber);
+  font-family: var(--font-num);
+  font-size: 11px;
+  cursor: pointer;
+  transition: transform 0.08s;
+}
+
+.dev-btn:active { transform: scale(0.95); }
+.dev-btn.danger { border-color: rgba(255, 59, 92, 0.6); color: var(--red); background: rgba(255, 59, 92, 0.06); }
+
+.dev-note { margin-top: 8px; font-size: 9.5px; color: var(--text-dim); line-height: 1.5; }
+
+#fps { cursor: pointer; padding: 4px 8px; }
+
+/* =========================================================
+   第8段階: 属性コア / オーバークロック
+   ======================================================= */
+
+/* ---- 熱ゲージ ---- */
+#heat-wrap { position: relative; }
+
+#heat-bar {
+  height: 7px;
+  background: rgba(255, 194, 51, 0.1);
+  border: 1px solid rgba(255, 194, 51, 0.4);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#heat-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #4fa8ff, #ffc233, #ff3b5c);
+  box-shadow: 0 0 8px rgba(255, 194, 51, 0.6);
+  transition: width 0.12s linear;
+}
+
+#heat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 2px;
+}
+
+#heat-label {
+  font-family: var(--font-num);
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+}
+
+#element-badge {
+  font-family: var(--font-num);
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+#heat-wrap.overclock #heat-bar {
+  border-color: var(--amber);
+  box-shadow: 0 0 16px rgba(255, 194, 51, 0.8);
+  animation: heat-pulse 0.5s ease-in-out infinite;
+}
+
+#heat-wrap.overclock #heat-label {
+  color: var(--amber);
+  text-shadow: 0 0 8px rgba(255, 194, 51, 0.9);
+}
+
+#heat-wrap.overheat #heat-bar { border-color: var(--red); }
+
+#heat-wrap.overheat #heat-label {
+  color: var(--red);
+  text-shadow: 0 0 8px rgba(255, 59, 92, 0.8);
+}
+
+@keyframes heat-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 194, 51, 0.5); }
+  50%      { box-shadow: 0 0 24px rgba(255, 194, 51, 1); }
+}
+
+/* ---- 属性カード ---- */
+.element-card {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 11px 12px;
+  background: rgba(255, 255, 255, 0.025);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.08s;
+}
+
+.element-card:active { transform: scale(0.98); }
+.element-card.active { background: rgba(255, 255, 255, 0.09); cursor: default; }
+.element-card.pending { background: rgba(255, 194, 51, 0.07); }
+
+.element-head { display: flex; align-items: baseline; gap: 8px; }
+.element-icon { font-size: 17px; }
+.element-name { font-size: 14px; font-weight: 700; letter-spacing: 1px; }
+.element-tag { font-size: 10px; color: var(--text-dim); margin-left: auto; }
+
+.element-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+.element-effect {
+  font-family: var(--font-num);
+  font-size: 11px;
+  color: var(--cyan);
+  margin-top: 5px;
+}
+
+.element-state {
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-dim);
+  margin-top: 7px;
+  text-align: right;
+}
+
+/* ---- メニューが増えたぶんのスクロール対応 ---- */
+#hud-menu {
+  max-height: 88vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+#hud-menu::-webkit-scrollbar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #heat-wrap.overclock #heat-bar { animation: none; }
+}
