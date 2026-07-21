@@ -50,7 +50,20 @@ const CONFIG = Object.freeze({
 
   HITSTOP_SCALE: 0.12,        // ヒットストップ中の時間倍率
   SHAKE_MAX: 14,
+
+  // 1回のupdateで進める最大時間。これを超える分は分割して処理する。
+  // 高速時に弾が敵をすり抜けるのを防ぐための上限。
+  MAX_SUBSTEP: 0.02,
+
+  // LAB研究の所要時間の上限。青天井にすると高レベルが数百年になるため必須。
+  LAB_MAX_DURATION: 48 * 3600,
+
+  OFFLINE_MAX_HOURS: 8,       // オフライン報酬の上限時間
+  OFFLINE_MIN_MINUTES: 1,     // これ未満は報酬なし
 });
+
+/** ゲームスピードの選択肢 */
+const GAME_SPEEDS = [1, 1.5, 2, 3];
 
 /** プレイヤー基礎ステータス（UPGRADESのeffectが加算していく土台） */
 const BASE_STATS = Object.freeze({
@@ -102,6 +115,26 @@ const BASE_STATS = Object.freeze({
   packageChance: 0,           // 通常敵のパッケージドロップ率
   packageHeal: 0.05,          // パッケージ1個の回復割合
   packageMax: 3,              // 同時存在数の上限
+  // 永続研究（第4段階）で操作する項目
+  bossDamageMul: 1,           // ボスへの与ダメージ倍率
+  enemySpeedMul: 1,           // 敵の移動速度倍率
+  coinBonus: 1,               // Coin獲得倍率
+  startingCash: 0,            // 開始時の所持Cash
+  startWave: 1,               // 開始Wave
+  gemChance: 0,               // ボス撃破時のGem獲得確率
+  // 高Tierアップグレード（第5段階）で操作する項目
+  damageMul: 1,               // 最終攻撃力の倍率
+  hpMul: 1,                   // 最終最大HPの倍率
+  lifesteal: 0,               // 与ダメージのHP吸収率
+  critChainChance: 0,         // クリティカル時の追撃発生率
+  executeThreshold: 0,        // 残HP割合がこの値以下の敵を即撃破
+  waveSkipChance: 0,          // Waveを飛ばす確率
+  omniStrikeChance: 0,        // 射程内全体攻撃の発生率
+  orbRings: 1,                // オーブの軌道リング数
+  mineCount: 1,               // 一度に設置する地雷の数
+  // LAB（実時間研究・第6段階）で操作する項目
+  offlineMul: 1,              // オフライン報酬の倍率
+  gemFindMul: 1,              // Gem獲得量の倍率
 });
 
 /* =========================================================
@@ -137,11 +170,13 @@ const ENEMY_TYPES = [
     behavior: 'charge', weight: 30, minWave: 8,
   },
   {
-    id: 'ranged', name: 'アーティラリー', desc: '射程外から砲撃してくる支援機',
+    id: 'ranged', name: 'アーティラリー', desc: '距離を取って砲撃してくる支援機',
     color: '#a561ff', glow: 'rgba(165,97,255,0.6)', shape: 'hex',
-    size: 13, baseHp: 26, baseAtk: 14, baseSpeed: 34,
-    cash: 14, coin: 0, exp: 4,
-    behavior: 'ranged', stopDistance: 230, fireInterval: 2.4,
+    size: 13, baseHp: 26, baseAtk: 10, baseSpeed: 34,
+    cash: 16, coin: 0, exp: 4,
+    // stopDistance は必ず BASE_STATS.range(175) より内側にすること。
+    // 外側に置くと初期射程では反撃できず詰む（第3段階の不具合）。
+    behavior: 'ranged', stopDistance: 150, fireInterval: 2.4,
     weight: 28, minWave: 14,
   },
   {
@@ -167,13 +202,39 @@ const WAVE_RULES = Object.freeze({
 });
 
 /**
+ * アップグレードの解放段階。到達した最高Waveが requiredWave 以上になると解放される。
+ * 段階を増やす場合はこの配列へ追加し、UPGRADES の tier に番号を書くだけでよい。
+ */
+const UPGRADE_TIERS = [
+  { tier: 1,  requiredWave: 0 },
+  { tier: 2,  requiredWave: 30 },
+  { tier: 3,  requiredWave: 50 },
+  { tier: 4,  requiredWave: 100 },
+  { tier: 5,  requiredWave: 200 },
+  { tier: 6,  requiredWave: 400 },
+  { tier: 7,  requiredWave: 600 },
+  { tier: 8,  requiredWave: 800 },
+  { tier: 9,  requiredWave: 1000 },
+  { tier: 10, requiredWave: 1500 },
+];
+
+/** tier番号 → 解放に必要なWave */
+function tierRequiredWave(tier) {
+  for (let i = 0; i < UPGRADE_TIERS.length; i++) {
+    if (UPGRADE_TIERS[i].tier === tier) return UPGRADE_TIERS[i].requiredWave;
+  }
+  return 0;
+}
+
+/**
  * アップグレード定義。ショップはこの配列から自動生成される。
- * 追加時はオブジェクトを1つ足すだけでよい。
+ * 追加時はオブジェクトを1つ足すだけでよい（tier で解放段階を指定）。
  */
 const UPGRADES = [
   /* ---------------- 攻撃 ---------------- */
   {
     id: 'damage', name: 'Damage', category: 'attack',
+    tier: 1,
     level: 0, maxLevel: 6000, baseCost: 8, growth: 1.08,
     description: '攻撃力が増加',
     effect(s, lv) { s.damage += lv * 2; },
@@ -181,6 +242,7 @@ const UPGRADES = [
   },
   {
     id: 'attackSpeed', name: 'Attack Speed', category: 'attack',
+    tier: 1,
     level: 0, maxLevel: 99, baseCost: 30, growth: 1.22,
     description: '攻撃速度が上昇',
     effect(s, lv) { s.attackInterval = BASE_STATS.attackInterval / (1 + lv * 0.04); },
@@ -188,6 +250,7 @@ const UPGRADES = [
   },
   {
     id: 'critChance', name: 'Critical Chance', category: 'attack',
+    tier: 1,
     level: 0, maxLevel: 80, baseCost: 50, growth: 1.18,
     description: 'クリティカル発生率（最大80%）',
     effect(s, lv) { s.critChance += lv * 0.01; },
@@ -195,6 +258,7 @@ const UPGRADES = [
   },
   {
     id: 'critDamage', name: 'Critical Damage', category: 'attack',
+    tier: 2,
     level: 0, maxLevel: 150, baseCost: 80, growth: 1.16,
     description: 'クリティカル倍率が上昇',
     effect(s, lv) { s.critMultiplier += lv * 0.05; },
@@ -202,6 +266,7 @@ const UPGRADES = [
   },
   {
     id: 'attackRange', name: 'Attack Range', category: 'attack',
+    tier: 1,
     level: 0, maxLevel: 79, baseCost: 60, growth: 1.19,
     description: '攻撃範囲が拡大',
     effect(s, lv) { s.range += lv * 4; },
@@ -209,6 +274,7 @@ const UPGRADES = [
   },
   {
     id: 'damagePerMeter', name: 'Damage Per Meter', category: 'attack',
+    tier: 2,
     level: 0, maxLevel: 100, baseCost: 120, growth: 1.20,
     description: '遠い敵ほどダメージ上昇',
     effect(s, lv) { s.damagePerMeter += lv * 0.02; },
@@ -216,6 +282,7 @@ const UPGRADES = [
   },
   {
     id: 'multishotChance', name: 'Multishot Chance', category: 'attack',
+    tier: 3,
     level: 0, maxLevel: 40, baseCost: 200, growth: 1.25,
     description: '複数の敵へ同時攻撃する確率',
     effect(s, lv) { s.multishotChance += lv * 0.02; },
@@ -223,6 +290,7 @@ const UPGRADES = [
   },
   {
     id: 'multishotTargets', name: 'Multishot Targets', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 5, baseCost: 1000, growth: 1.9,
     description: '同時攻撃数（最大7体）',
     effect(s, lv) { s.multishotTargets += lv; },
@@ -230,6 +298,7 @@ const UPGRADES = [
   },
   {
     id: 'rapidFireChance', name: 'Rapid Fire Chance', category: 'attack',
+    tier: 3,
     level: 0, maxLevel: 50, baseCost: 300, growth: 1.24,
     description: '高速連射モード発動率',
     effect(s, lv) { s.rapidFireChance += lv * 0.01; },
@@ -237,6 +306,7 @@ const UPGRADES = [
   },
   {
     id: 'rapidFireDuration', name: 'Rapid Fire Duration', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 20, baseCost: 400, growth: 1.35,
     description: '高速連射の持続時間',
     effect(s, lv) { s.rapidFireDuration += lv * 0.25; },
@@ -244,6 +314,7 @@ const UPGRADES = [
   },
   {
     id: 'bounceChance', name: 'Bounce Chance', category: 'attack',
+    tier: 3,
     level: 0, maxLevel: 40, baseCost: 250, growth: 1.25,
     description: '弾が別の敵へ跳弾する確率',
     effect(s, lv) { s.bounceChance += lv * 0.02; },
@@ -251,6 +322,7 @@ const UPGRADES = [
   },
   {
     id: 'bounceCount', name: 'Bounce Count', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 6, baseCost: 800, growth: 1.9,
     description: '跳弾回数（最大7回）',
     effect(s, lv) { s.bounceCount += lv; },
@@ -258,6 +330,7 @@ const UPGRADES = [
   },
   {
     id: 'bounceRange', name: 'Bounce Range', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 30, baseCost: 350, growth: 1.3,
     description: '跳弾の索敵距離',
     effect(s, lv) { s.bounceRange += lv * 8; },
@@ -265,6 +338,7 @@ const UPGRADES = [
   },
   {
     id: 'superCritChance', name: 'Super Crit Chance', category: 'attack',
+    tier: 5,
     level: 0, maxLevel: 30, baseCost: 1500, growth: 1.35,
     description: 'クリティカルがスーパー化する確率',
     effect(s, lv) { s.superCritChance += lv * 0.01; },
@@ -272,6 +346,7 @@ const UPGRADES = [
   },
   {
     id: 'superCritDamage', name: 'Super Crit Damage', category: 'attack',
+    tier: 5,
     level: 0, maxLevel: 100, baseCost: 2000, growth: 1.3,
     description: 'スーパークリティカル倍率',
     effect(s, lv) { s.superCritMultiplier += lv * 0.1; },
@@ -279,6 +354,7 @@ const UPGRADES = [
   },
   {
     id: 'armorBreakChance', name: 'Armor Break Chance', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 50, baseCost: 600, growth: 1.28,
     description: '敵の防御を低下させる確率',
     effect(s, lv) { s.armorBreakChance += lv * 0.01; },
@@ -286,6 +362,7 @@ const UPGRADES = [
   },
   {
     id: 'armorBreakMult', name: 'Armor Break Multiplier', category: 'attack',
+    tier: 4,
     level: 0, maxLevel: 50, baseCost: 800, growth: 1.3,
     description: '防御低下中の被ダメージ倍率',
     effect(s, lv) { s.armorBreakMultiplier += lv * 0.03; },
@@ -295,6 +372,7 @@ const UPGRADES = [
   /* ---------------- 防御 ---------------- */
   {
     id: 'health', name: 'Health', category: 'defense',
+    tier: 1,
     level: 0, maxLevel: 2000, baseCost: 12, growth: 1.10,
     description: '最大HPが増加',
     effect(s, lv) { s.maxHp += lv * 20; },
@@ -302,6 +380,7 @@ const UPGRADES = [
   },
   {
     id: 'healthRegen', name: 'Health Regen', category: 'defense',
+    tier: 1,
     level: 0, maxLevel: 200, baseCost: 40, growth: 1.18,
     description: 'HPが毎秒自動回復',
     effect(s, lv) { s.hpRegen += lv * 0.5; },
@@ -309,6 +388,7 @@ const UPGRADES = [
   },
   {
     id: 'defense', name: 'Defense', category: 'defense',
+    tier: 1,
     level: 0, maxLevel: 500, baseCost: 60, growth: 1.16,
     description: '被ダメージを軽減',
     effect(s, lv) { s.defense += lv; },
@@ -316,6 +396,7 @@ const UPGRADES = [
   },
   {
     id: 'orbCount', name: 'Orb', category: 'defense',
+    tier: 2,
     level: 0, maxLevel: 8, baseCost: 500, growth: 2.1,
     description: '周回する防衛オーブを展開',
     effect(s, lv) { s.orbCount += lv; },
@@ -323,6 +404,7 @@ const UPGRADES = [
   },
   {
     id: 'orbDamage', name: 'Orb Damage', category: 'defense',
+    tier: 2,
     level: 0, maxLevel: 500, baseCost: 200, growth: 1.15,
     description: 'オーブの接触ダメージ',
     effect(s, lv) { s.orbDamage += lv * 6; },
@@ -330,6 +412,7 @@ const UPGRADES = [
   },
   {
     id: 'orbSpeed', name: 'Orb Speed', category: 'defense',
+    tier: 3,
     level: 0, maxLevel: 60, baseCost: 300, growth: 1.2,
     description: 'オーブの回転速度',
     effect(s, lv) { s.orbSpeed += lv * 0.08; },
@@ -337,6 +420,7 @@ const UPGRADES = [
   },
   {
     id: 'orbBossDamage', name: 'Orb Boss Damage', category: 'defense',
+    tier: 5,
     level: 0, maxLevel: 40, baseCost: 2500, growth: 1.35,
     description: 'オーブがボスへ割合ダメージ',
     effect(s, lv) { s.orbBossDamage += lv * 0.001; },
@@ -344,6 +428,7 @@ const UPGRADES = [
   },
   {
     id: 'mineDamage', name: 'Mine Damage', category: 'defense',
+    tier: 3,
     level: 0, maxLevel: 500, baseCost: 400, growth: 1.16,
     description: '自動設置される地雷の威力',
     effect(s, lv) { s.mineDamage += lv * 14; },
@@ -351,6 +436,7 @@ const UPGRADES = [
   },
   {
     id: 'mineDecay', name: 'Mine Decay', category: 'defense',
+    tier: 4,
     level: 0, maxLevel: 40, baseCost: 350, growth: 1.22,
     description: '地雷の起爆までの時間を短縮',
     effect(s, lv) { s.mineDecay = Math.max(3.0 - lv * 0.06, 0.5); },
@@ -358,6 +444,7 @@ const UPGRADES = [
   },
   {
     id: 'shockwaveSize', name: 'Shockwave Size', category: 'defense',
+    tier: 3,
     level: 0, maxLevel: 60, baseCost: 450, growth: 1.2,
     description: '爆発の範囲が拡大',
     effect(s, lv) { s.shockwaveSize += lv * 4; },
@@ -365,6 +452,7 @@ const UPGRADES = [
   },
   {
     id: 'wallHealth', name: 'Wall Health', category: 'defense',
+    tier: 3,
     level: 0, maxLevel: 1000, baseCost: 600, growth: 1.14,
     description: 'コアを覆う防御壁を展開',
     effect(s, lv) { s.wallHealth += lv * 40; },
@@ -372,6 +460,7 @@ const UPGRADES = [
   },
   {
     id: 'wallRegen', name: 'Wall Regen', category: 'defense',
+    tier: 4,
     level: 0, maxLevel: 200, baseCost: 500, growth: 1.18,
     description: '防御壁が毎秒回復',
     effect(s, lv) { s.wallRegen += lv * 2; },
@@ -379,6 +468,7 @@ const UPGRADES = [
   },
   {
     id: 'wallInvincible', name: 'Wall Invincible', category: 'defense',
+    tier: 5,
     level: 0, maxLevel: 30, baseCost: 900, growth: 1.3,
     description: '壁の被弾後の無敵時間',
     effect(s, lv) { s.wallInvincible += lv * 0.04; },
@@ -386,6 +476,7 @@ const UPGRADES = [
   },
   {
     id: 'wallThorns', name: 'Wall Thorns', category: 'defense',
+    tier: 4,
     level: 0, maxLevel: 300, baseCost: 700, growth: 1.16,
     description: '壁に触れた敵へ反射ダメージ',
     effect(s, lv) { s.wallThorns += lv * 10; },
@@ -393,6 +484,7 @@ const UPGRADES = [
   },
   {
     id: 'wallFortification', name: 'Wall Fortification', category: 'defense',
+    tier: 5,
     level: 0, maxLevel: 50, baseCost: 1200, growth: 1.3,
     description: '壁の最大耐久を倍率で強化',
     effect(s, lv) { s.wallFortification += lv * 0.1; },
@@ -400,6 +492,7 @@ const UPGRADES = [
   },
   {
     id: 'garlicThorns', name: 'Garlic Thorns', category: 'defense',
+    tier: 4,
     level: 0, maxLevel: 300, baseCost: 800, growth: 1.16,
     description: '近接した敵へ継続ダメージ',
     effect(s, lv) { s.garlicThorns += lv * 8; },
@@ -409,6 +502,7 @@ const UPGRADES = [
   /* ---------------- ユーティリティ ---------------- */
   {
     id: 'cashBonus', name: 'Cash Bonus', category: 'utility',
+    tier: 1,
     level: 0, maxLevel: 200, baseCost: 100, growth: 1.22,
     description: '獲得Cashが増加',
     effect(s, lv) { s.cashBonus += lv * 0.05; },
@@ -416,6 +510,7 @@ const UPGRADES = [
   },
   {
     id: 'cashPerWave', name: 'Cash Per Wave', category: 'utility',
+    tier: 2,
     level: 0, maxLevel: 100, baseCost: 150, growth: 1.25,
     description: 'Waveクリア時にCash獲得',
     effect(s, lv) { s.cashPerWave += lv * 10; },
@@ -423,6 +518,7 @@ const UPGRADES = [
   },
   {
     id: 'coinPerKill', name: 'Coin Per Kill', category: 'utility',
+    tier: 2,
     level: 0, maxLevel: 50, baseCost: 500, growth: 1.35,
     description: '撃破時にCoin獲得（期待値）',
     effect(s, lv) { s.coinPerKill += lv * 0.01; },
@@ -430,6 +526,7 @@ const UPGRADES = [
   },
   {
     id: 'coinPerWave', name: 'Coin Per Wave', category: 'utility',
+    tier: 4,
     level: 0, maxLevel: 50, baseCost: 800, growth: 1.4,
     description: 'Waveクリア時にCoin獲得',
     effect(s, lv) { s.coinPerWave += lv * 0.2; },
@@ -437,6 +534,7 @@ const UPGRADES = [
   },
   {
     id: 'interest', name: 'Interest', category: 'utility',
+    tier: 2,
     level: 0, maxLevel: 30, baseCost: 400, growth: 1.4,
     description: 'Waveクリア時に所持Cashの利息',
     effect(s, lv) { s.interest += lv * 0.01; },
@@ -444,6 +542,7 @@ const UPGRADES = [
   },
   {
     id: 'maxInterest', name: 'Max Interest', category: 'utility',
+    tier: 2,
     level: 0, maxLevel: 50, baseCost: 600, growth: 1.35,
     description: '利息の上限額が増加',
     effect(s, lv) { s.maxInterestCap += lv * 250; },
@@ -451,6 +550,7 @@ const UPGRADES = [
   },
   {
     id: 'bossPackage', name: 'Boss Package', category: 'utility',
+    tier: 4,
     level: 0, maxLevel: 20, baseCost: 1200, growth: 1.4,
     description: 'ボス撃破時に補給パッケージ',
     effect(s, lv) { s.bossPackage += lv; },
@@ -458,6 +558,7 @@ const UPGRADES = [
   },
   {
     id: 'packageChance', name: 'Package Chance', category: 'utility',
+    tier: 3,
     level: 0, maxLevel: 40, baseCost: 700, growth: 1.3,
     description: '敵がパッケージを落とす確率',
     effect(s, lv) { s.packageChance += lv * 0.005; },
@@ -465,6 +566,7 @@ const UPGRADES = [
   },
   {
     id: 'packageHeal', name: 'Package Heal', category: 'utility',
+    tier: 3,
     level: 0, maxLevel: 50, baseCost: 500, growth: 1.28,
     description: 'パッケージのHP回復量',
     effect(s, lv) { s.packageHeal += lv * 0.01; },
@@ -472,6 +574,7 @@ const UPGRADES = [
   },
   {
     id: 'packageMax', name: 'Package Max', category: 'utility',
+    tier: 4,
     level: 0, maxLevel: 12, baseCost: 900, growth: 1.45,
     description: '同時に存在できるパッケージ数',
     effect(s, lv) { s.packageMax += lv; },
@@ -479,6 +582,7 @@ const UPGRADES = [
   },
   {
     id: 'enemyAttackSkip', name: 'Enemy Attack Skip', category: 'utility',
+    tier: 3,
     level: 0, maxLevel: 40, baseCost: 700, growth: 1.35,
     description: '敵の攻撃を無効化する確率',
     effect(s, lv) { s.enemyAttackSkip += lv * 0.01; },
@@ -486,11 +590,686 @@ const UPGRADES = [
   },
   {
     id: 'enemyHpSkip', name: 'Enemy HP Skip', category: 'utility',
+    tier: 4,
     level: 0, maxLevel: 40, baseCost: 900, growth: 1.35,
     description: '敵がHP半減で出現する確率',
     effect(s, lv) { s.enemyHpSkip += lv * 0.01; },
     valueText: (lv) => lv + '%',
   },
+
+  /* ---------- 高Tier（第5段階で追加） ---------- */
+  {
+    id: 'damageMultiplier', name: 'Damage Multiplier', category: 'attack',
+    tier: 5,
+    level: 0, maxLevel: 100, baseCost: 25000, growth: 1.32,
+    description: '最終攻撃力に倍率がかかる',
+    effect(s, lv) { s.damageMul += lv * 0.1; },
+    valueText: (lv) => 'x' + (1 + lv * 0.1).toFixed(1),
+  },
+  {
+    id: 'hpMultiplier', name: 'Health Multiplier', category: 'defense',
+    tier: 5,
+    level: 0, maxLevel: 100, baseCost: 25000, growth: 1.32,
+    description: '最終最大HPに倍率がかかる',
+    effect(s, lv) { s.hpMul += lv * 0.1; },
+    valueText: (lv) => 'x' + (1 + lv * 0.1).toFixed(1),
+  },
+  {
+    id: 'critChain', name: 'Critical Chain', category: 'attack',
+    tier: 6,
+    level: 0, maxLevel: 50, baseCost: 120000, growth: 1.34,
+    description: 'クリティカル時に追撃が発生する確率',
+    effect(s, lv) { s.critChainChance += lv * 0.015; },
+    valueText: (lv) => (lv * 1.5).toFixed(1) + '%',
+  },
+  {
+    id: 'lifesteal', name: 'Lifesteal', category: 'defense',
+    tier: 6,
+    level: 0, maxLevel: 60, baseCost: 150000, growth: 1.33,
+    description: '与ダメージの一部をHPとして吸収',
+    effect(s, lv) { s.lifesteal += lv * 0.002; },
+    valueText: (lv) => (lv * 0.2).toFixed(1) + '%',
+  },
+  {
+    id: 'orbRings', name: 'Orbital Ring', category: 'defense',
+    tier: 7,
+    level: 0, maxLevel: 3, baseCost: 900000, growth: 3.2,
+    description: 'オーブの軌道リングが増える',
+    effect(s, lv) { s.orbRings += lv; },
+    valueText: (lv) => (1 + lv) + '重',
+  },
+  {
+    id: 'mineCluster', name: 'Mine Cluster', category: 'defense',
+    tier: 7,
+    level: 0, maxLevel: 8, baseCost: 700000, growth: 1.9,
+    description: '一度に設置する地雷の数',
+    effect(s, lv) { s.mineCount += lv; },
+    valueText: (lv) => (1 + lv) + '個',
+  },
+  {
+    id: 'execute', name: 'Execution', category: 'attack',
+    tier: 8,
+    level: 0, maxLevel: 40, baseCost: 5000000, growth: 1.38,
+    description: '残HPが一定以下の敵を即撃破（ボス除く）',
+    effect(s, lv) { s.executeThreshold += lv * 0.005; },
+    valueText: (lv) => '残HP ' + (lv * 0.5).toFixed(1) + '% 以下',
+  },
+  {
+    id: 'waveSkip', name: 'Wave Skip', category: 'utility',
+    tier: 8,
+    level: 0, maxLevel: 30, baseCost: 6000000, growth: 1.42,
+    description: 'Waveを報酬付きで飛ばす確率',
+    effect(s, lv) { s.waveSkipChance += lv * 0.01; },
+    valueText: (lv) => lv + '%',
+  },
+  {
+    id: 'goldenTouch', name: 'Golden Touch', category: 'utility',
+    tier: 9,
+    level: 0, maxLevel: 100, baseCost: 40000000, growth: 1.36,
+    description: 'Cash獲得量が大幅に増加',
+    effect(s, lv) { s.cashBonus += lv * 0.5; },
+    valueText: (lv) => '+' + (lv * 50) + '%',
+  },
+  {
+    id: 'timeDilation', name: 'Time Dilation', category: 'utility',
+    tier: 9,
+    level: 0, maxLevel: 40, baseCost: 50000000, growth: 1.4,
+    description: '敵全体の移動速度を低下させる',
+    effect(s, lv) { s.enemySpeedMul -= lv * 0.01; },
+    valueText: (lv) => '-' + lv + '%',
+  },
+  {
+    id: 'omniStrike', name: 'Omni Strike', category: 'attack',
+    tier: 10,
+    level: 0, maxLevel: 50, baseCost: 400000000, growth: 1.42,
+    description: '攻撃時に射程内の敵全てを攻撃する確率',
+    effect(s, lv) { s.omniStrikeChance += lv * 0.01; },
+    valueText: (lv) => lv + '%',
+  },
+  {
+    id: 'infinityCore', name: 'Infinity Core', category: 'defense',
+    tier: 10,
+    level: 0, maxLevel: 200, baseCost: 500000000, growth: 1.3,
+    description: '攻撃力・HP・防御が同時に上昇する',
+    effect(s, lv) {
+      s.damageMul += lv * 0.05;
+      s.hpMul += lv * 0.05;
+      s.defense += lv * 20;
+    },
+    valueText: (lv) => 'x' + (1 + lv * 0.05).toFixed(2) + ' / 防御+' + formatNumber(lv * 20),
+  },
+];
+
+/**
+ * 永続研究。Coinで購入し、セーブデータに保存されて次の周回へ引き継がれる。
+ * effect は BASE_STATS のコピーに対して適用され、その結果へ UPGRADES が乗る。
+ * ショップ同様、この配列へ追加するだけでUIが自動生成される。
+ */
+const RESEARCH = [
+  {
+    id: 'coreDamage', name: 'コア出力', tier: 1, level: 0, maxLevel: 200,
+    baseCost: 3, growth: 1.16, description: '基礎攻撃力が永続的に増加',
+    effect(s, lv) { s.damage += lv * 2; },
+    valueText: (lv) => '攻撃力 +' + formatNumber(lv * 2),
+  },
+  {
+    id: 'coreHealth', name: '装甲強化', tier: 1, level: 0, maxLevel: 200,
+    baseCost: 3, growth: 1.16, description: '基礎HPが永続的に増加',
+    effect(s, lv) { s.maxHp += lv * 25; },
+    valueText: (lv) => 'HP +' + formatNumber(lv * 25),
+  },
+  {
+    id: 'coreRange', name: '照準拡張', tier: 1, level: 0, maxLevel: 60,
+    baseCost: 6, growth: 1.20, description: '基礎射程が永続的に拡大',
+    effect(s, lv) { s.range += lv * 3; },
+    valueText: (lv) => '射程 +' + (lv * 3),
+  },
+  {
+    id: 'coreAttackSpeed', name: '冷却機構', tier: 1, level: 0, maxLevel: 50,
+    baseCost: 8, growth: 1.22, description: '基礎攻撃速度が上昇',
+    effect(s, lv) { s.attackInterval = s.attackInterval / (1 + lv * 0.02); },
+    valueText: (lv) => '攻撃速度 +' + (lv * 2) + '%',
+  },
+  {
+    id: 'coreDefense', name: '反応装甲', tier: 1, level: 0, maxLevel: 100,
+    baseCost: 5, growth: 1.18, description: '基礎防御力が永続的に増加',
+    effect(s, lv) { s.defense += lv; },
+    valueText: (lv) => '防御 +' + lv,
+  },
+  {
+    id: 'coreRegen', name: '自己修復', tier: 1, level: 0, maxLevel: 100,
+    baseCost: 6, growth: 1.18, description: 'HPの自動回復量が増加',
+    effect(s, lv) { s.hpRegen += lv * 0.3; },
+    valueText: (lv) => '回復 +' + (lv * 0.3).toFixed(1) + '/s',
+  },
+  {
+    id: 'startingCash', name: '初期資金', tier: 2, level: 0, maxLevel: 100,
+    baseCost: 4, growth: 1.19, description: '開始時に所持しているCash',
+    effect(s, lv) { s.startingCash += lv * 50; },
+    valueText: (lv) => '$' + formatNumber(lv * 50),
+  },
+  {
+    id: 'cashMastery', name: '資源精製', tier: 1, level: 0, maxLevel: 100,
+    baseCost: 7, growth: 1.20, description: 'Cash獲得量が増加',
+    effect(s, lv) { s.cashBonus += lv * 0.05; },
+    valueText: (lv) => 'Cash +' + (lv * 5) + '%',
+  },
+  {
+    id: 'coinMastery', name: '通貨鋳造', tier: 2, level: 0, maxLevel: 100,
+    baseCost: 10, growth: 1.24, description: 'Coin獲得量が増加',
+    effect(s, lv) { s.coinBonus += lv * 0.05; },
+    valueText: (lv) => 'Coin +' + (lv * 5) + '%',
+  },
+  {
+    id: 'interestMastery', name: '複利運用', tier: 2, level: 0, maxLevel: 40,
+    baseCost: 12, growth: 1.28, description: 'Waveクリア時の利息が増加',
+    effect(s, lv) { s.interest += lv * 0.005; s.maxInterestCap += lv * 200; },
+    valueText: (lv) => '利息 +' + (lv * 0.5).toFixed(1) + '%',
+  },
+  {
+    id: 'bossSlayer', name: '巨人殺し', tier: 5, level: 0, maxLevel: 60,
+    baseCost: 15, growth: 1.26, description: 'ボスへの与ダメージが増加',
+    effect(s, lv) { s.bossDamageMul += lv * 0.05; },
+    valueText: (lv) => 'ボス与ダメ +' + (lv * 5) + '%',
+  },
+  {
+    id: 'enemySlow', name: '重力干渉', tier: 9, level: 0, maxLevel: 30,
+    baseCost: 20, growth: 1.30, description: '敵全体の移動速度を低下',
+    effect(s, lv) { s.enemySpeedMul -= lv * 0.01; },
+    valueText: (lv) => '敵速度 -' + lv + '%',
+  },
+  {
+    id: 'startWave', name: '戦域転送', tier: 3, level: 0, maxLevel: 40,
+    baseCost: 25, growth: 1.35,
+    description: '選択できる開始Waveの上限を解放（設定から変更）',
+    effect(s, lv) { s.startWave += lv; },
+    valueText: (lv) => 'Wave ' + (1 + lv) + ' まで解放',
+  },
+  {
+    id: 'orbMastery', name: '衛星兵装', tier: 2, level: 0, maxLevel: 3,
+    baseCost: 60, growth: 2.4, description: '開始時からオーブを保有',
+    effect(s, lv) { s.orbCount += lv; s.orbDamage += lv * 20; },
+    valueText: (lv) => 'オーブ ' + lv + '基',
+  },
+  {
+    id: 'gemFinder', name: '結晶探知', tier: 5, level: 0, maxLevel: 25,
+    baseCost: 40, growth: 1.35, description: 'ボス撃破時のGem獲得率',
+    effect(s, lv) { s.gemChance += lv * 0.04; },
+    valueText: (lv) => 'Gem率 ' + (lv * 4) + '%',
+  },
+  {
+    id: 'packageMastery', name: '補給網', tier: 3, level: 0, maxLevel: 50,
+    baseCost: 14, growth: 1.24, description: 'パッケージのドロップ率と効果',
+    effect(s, lv) { s.packageChance += lv * 0.002; s.packageHeal += lv * 0.004; },
+    valueText: (lv) => 'ドロップ +' + (lv * 0.2).toFixed(1) + '%',
+  },
+];
+
+/* ---------------------------------------------------------
+ * LAB（実時間研究）
+ * ------------------------------------------------------- */
+
+/** 研究スロットの解放費用（Gem）。index 0 は最初から使える枠 */
+const LAB_SLOT_COSTS = [0, 60, 180, 450, 1000];
+
+/** Gemによる時短の単価: この秒数ごとに1Gem */
+const LAB_SPEEDUP_SECONDS_PER_GEM = 600;
+
+/** 高Wave到達で得られるGem。到達済みの節目は meta.gemMilestones に記録される */
+const GEM_MILESTONES = [
+  { wave: 25, gem: 2 },
+  { wave: 50, gem: 5 },
+  { wave: 100, gem: 12 },
+  { wave: 200, gem: 30 },
+  { wave: 400, gem: 70 },
+  { wave: 600, gem: 120 },
+  { wave: 800, gem: 200 },
+  { wave: 1000, gem: 350 },
+  { wave: 1500, gem: 700 },
+];
+
+/**
+ * LAB研究。Coinを支払って着手し、実時間の経過で完了する。
+ * ゲームを閉じている間も進行する（完了時刻をセーブデータへ保持）。
+ * この配列へ追加するだけでLAB画面へ自動的に並ぶ。
+ */
+const LAB_RESEARCH = [
+  /* ---- 攻撃 ---- */
+  {
+    id: 'labAttackSpeed', name: '駆動系最適化', category: 'attack', tier: 1,
+    level: 0, maxLevel: 60,
+    baseCost: 40, costGrowth: 1.30,
+    baseDuration: 120, durationGrowth: 1.24,
+    description: '攻撃速度が上昇する',
+    effect(s, lv) { s.attackInterval = s.attackInterval / (1 + lv * 0.02); },
+    valueText: (lv) => '攻撃速度 +' + (lv * 2) + '%',
+  },
+  {
+    id: 'labDamage', name: '砲身精錬', category: 'attack', tier: 1,
+    level: 0, maxLevel: 60,
+    baseCost: 50, costGrowth: 1.30,
+    baseDuration: 150, durationGrowth: 1.24,
+    description: '攻撃力に倍率がかかる',
+    effect(s, lv) { s.damageMul += lv * 0.05; },
+    valueText: (lv) => 'ダメージ +' + (lv * 5) + '%',
+  },
+  {
+    id: 'labCritChance', name: '弱点解析', category: 'attack', tier: 1,
+    level: 0, maxLevel: 25,
+    baseCost: 90, costGrowth: 1.34,
+    baseDuration: 300, durationGrowth: 1.26,
+    description: 'クリティカル率が上昇する',
+    effect(s, lv) { s.critChance += lv * 0.03; },
+    valueText: (lv) => 'クリ率 +' + (lv * 3) + '%',
+  },
+  {
+    id: 'labCritDamage', name: '貫通弾頭', category: 'attack', tier: 2,
+    level: 0, maxLevel: 40,
+    baseCost: 110, costGrowth: 1.32,
+    baseDuration: 330, durationGrowth: 1.24,
+    description: 'クリティカル倍率が上昇する',
+    effect(s, lv) { s.critMultiplier += lv * 0.08; },
+    valueText: (lv) => 'クリダメ +' + (lv * 8) + '%',
+  },
+  {
+    id: 'labRange', name: '広域照準', category: 'attack', tier: 1,
+    level: 0, maxLevel: 40,
+    baseCost: 70, costGrowth: 1.30,
+    baseDuration: 240, durationGrowth: 1.22,
+    description: '攻撃範囲が拡大する',
+    effect(s, lv) { s.range += lv * 8; },
+    valueText: (lv) => '射程 +' + (lv * 8),
+  },
+
+  /* ---- 防御 ---- */
+  {
+    id: 'labHealth', name: '構造補強', category: 'defense', tier: 1,
+    level: 0, maxLevel: 60,
+    baseCost: 50, costGrowth: 1.30,
+    baseDuration: 150, durationGrowth: 1.24,
+    description: '最大HPに倍率がかかる',
+    effect(s, lv) { s.hpMul += lv * 0.08; },
+    valueText: (lv) => 'HP +' + (lv * 8) + '%',
+  },
+  {
+    id: 'labDefense', name: '複合装甲', category: 'defense', tier: 1,
+    level: 0, maxLevel: 50,
+    baseCost: 80, costGrowth: 1.31,
+    baseDuration: 270, durationGrowth: 1.23,
+    description: '防御力が上昇する',
+    effect(s, lv) { s.defense += lv * 10; },
+    valueText: (lv) => '防御 +' + formatNumber(lv * 10),
+  },
+  {
+    id: 'labWallHealth', name: '障壁増幅', category: 'defense', tier: 3,
+    level: 0, maxLevel: 40,
+    baseCost: 120, costGrowth: 1.33,
+    baseDuration: 360, durationGrowth: 1.24,
+    description: '防御壁の耐久倍率が上昇する',
+    effect(s, lv) { s.wallFortification += lv * 0.1; },
+    valueText: (lv) => '壁HP +' + (lv * 10) + '%',
+  },
+  {
+    id: 'labOrbSpeed', name: '軌道加速', category: 'defense', tier: 3,
+    level: 0, maxLevel: 40,
+    baseCost: 100, costGrowth: 1.32,
+    baseDuration: 300, durationGrowth: 1.22,
+    description: 'オーブの回転速度が上昇する',
+    effect(s, lv) { s.orbSpeed += lv * 0.08; },
+    valueText: (lv) => 'オーブ速度 +' + (lv * 5) + '%',
+  },
+
+  /* ---- 経済 ---- */
+  {
+    id: 'labCoin', name: '鋳造効率', category: 'economy', tier: 2,
+    level: 0, maxLevel: 50,
+    baseCost: 100, costGrowth: 1.33,
+    baseDuration: 420, durationGrowth: 1.24,
+    description: 'Coin獲得量が増加する',
+    effect(s, lv) { s.coinBonus += lv * 0.1; },
+    valueText: (lv) => 'Coin +' + (lv * 10) + '%',
+  },
+  {
+    id: 'labCash', name: '資源循環', category: 'economy', tier: 1,
+    level: 0, maxLevel: 60,
+    baseCost: 60, costGrowth: 1.31,
+    baseDuration: 210, durationGrowth: 1.23,
+    description: 'Cash獲得量が増加する',
+    effect(s, lv) { s.cashBonus += lv * 0.15; },
+    valueText: (lv) => 'Cash +' + (lv * 15) + '%',
+  },
+  {
+    id: 'labInterest', name: '金融演算', category: 'economy', tier: 2,
+    level: 0, maxLevel: 30,
+    baseCost: 150, costGrowth: 1.36,
+    baseDuration: 480, durationGrowth: 1.26,
+    description: 'Waveクリア時の利息が増加する',
+    effect(s, lv) { s.interest += lv * 0.01; s.maxInterestCap += lv * 500; },
+    valueText: (lv) => '利息 +' + lv + '%',
+  },
+  {
+    id: 'labOffline', name: '自律運転', category: 'economy', tier: 4,
+    level: 0, maxLevel: 30,
+    baseCost: 130, costGrowth: 1.35,
+    baseDuration: 600, durationGrowth: 1.24,
+    description: 'オフライン報酬が増加する',
+    effect(s, lv) { s.offlineMul += lv * 0.15; },
+    valueText: (lv) => 'オフライン +' + (lv * 15) + '%',
+  },
+
+  /* ---- 特殊 ---- */
+  {
+    id: 'labBoss', name: '巨獣解剖', category: 'special', tier: 5,
+    level: 0, maxLevel: 40,
+    baseCost: 200, costGrowth: 1.36,
+    baseDuration: 720, durationGrowth: 1.26,
+    description: 'ボスへの与ダメージが増加する',
+    effect(s, lv) { s.bossDamageMul += lv * 0.1; },
+    valueText: (lv) => 'ボス与ダメ +' + (lv * 10) + '%',
+  },
+  {
+    id: 'labGem', name: '結晶精製', category: 'special', tier: 5,
+    level: 0, maxLevel: 20,
+    baseCost: 300, costGrowth: 1.42,
+    baseDuration: 900, durationGrowth: 1.30,
+    description: 'Gem獲得量が増加する',
+    effect(s, lv) { s.gemFindMul += lv * 0.1; },
+    valueText: (lv) => 'Gem +' + (lv * 10) + '%',
+  },
+];
+
+const LAB_CATEGORIES = [
+  { id: 'attack', label: '攻撃' },
+  { id: 'defense', label: '防御' },
+  { id: 'economy', label: '経済' },
+  { id: 'special', label: '特殊' },
+];
+
+/* ---------------------------------------------------------
+ * モジュール（装備システム）
+ * ------------------------------------------------------- */
+
+/**
+ * レアリティ。power はモジュール性能の倍率、subs はランダム能力の個数。
+ * 上位を足したい場合はこの配列の末尾へ追加する。
+ */
+const RARITIES = [
+  { id: 'common', name: 'Common', color: '#9fb4c7', weight: 6000, power: 1.0, subs: 0 },
+  { id: 'rare', name: 'Rare', color: '#4fa8ff', weight: 2500, power: 1.5, subs: 1 },
+  { id: 'epic', name: 'Epic', color: '#a561ff', weight: 1000, power: 2.2, subs: 2 },
+  { id: 'legend', name: 'Legend', color: '#ffc233', weight: 400, power: 3.2, subs: 3 },
+  { id: 'mythic', name: 'Mythic', color: '#ff2d95', weight: 90, power: 4.6, subs: 4 },
+  { id: 'unique', name: 'Unique', color: '#3dff9e', weight: 10, power: 6.5, subs: 5 },
+];
+
+/** レアリティ id から定義を引く */
+function rarityById(id) {
+  for (let i = 0; i < RARITIES.length; i++) {
+    if (RARITIES[i].id === id) return RARITIES[i];
+  }
+  return RARITIES[0];
+}
+
+function rarityIndex(id) {
+  for (let i = 0; i < RARITIES.length; i++) {
+    if (RARITIES[i].id === id) return i;
+  }
+  return 0;
+}
+
+/** モジュールの装備枠。種類ごとに1つずつ装備できる */
+const MODULE_TYPES = [
+  { id: 'attack', label: '攻撃', color: '#ff3b6b' },
+  { id: 'defense', label: '防御', color: '#00e5ff' },
+  { id: 'economy', label: '経済', color: '#3dff9e' },
+  { id: 'special', label: '特殊', color: '#a561ff' },
+];
+
+/**
+ * モジュールの設計図。ガチャはこの配列から抽選する。
+ * fixed は「固定能力」で、power（レアリティ倍率×レベル補正）が乗る。
+ */
+const MODULE_BLUEPRINTS = [
+  /* ---- 攻撃 ---- */
+  {
+    id: 'mod_barrel', name: '加速砲身', type: 'attack',
+    desc: '攻撃力に倍率がかかる',
+    fixed(s, p) { s.damageMul += 0.12 * p; },
+    fixedText: (p) => 'ダメージ +' + (12 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_coolant', name: '冷却循環器', type: 'attack',
+    desc: '攻撃速度が上昇する',
+    fixed(s, p) { s.attackInterval = s.attackInterval / (1 + 0.08 * p); },
+    fixedText: (p) => '攻撃速度 +' + (8 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_scope', name: '照準演算装置', type: 'attack',
+    desc: 'クリティカル率と倍率が上昇する',
+    fixed(s, p) { s.critChance += 0.04 * p; s.critMultiplier += 0.12 * p; },
+    fixedText: (p) => 'クリ率 +' + (4 * p).toFixed(1) + '% / 倍率 +' + (12 * p).toFixed(0) + '%',
+  },
+
+  /* ---- 防御 ---- */
+  {
+    id: 'mod_plating', name: '積層装甲板', type: 'defense',
+    desc: '最大HPに倍率がかかる',
+    fixed(s, p) { s.hpMul += 0.15 * p; },
+    fixedText: (p) => 'HP +' + (15 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_barrier', name: '障壁発生器', type: 'defense',
+    desc: '防御壁の耐久と回復が上昇する',
+    fixed(s, p) { s.wallFortification += 0.2 * p; s.wallRegen += 6 * p; },
+    fixedText: (p) => '壁HP +' + (20 * p).toFixed(0) + '% / 壁回復 +' + (6 * p).toFixed(0),
+  },
+  {
+    id: 'mod_nanite', name: 'ナノマシン群', type: 'defense',
+    desc: 'HPの自動回復と防御力が上昇する',
+    fixed(s, p) { s.hpRegen += 3 * p; s.defense += 12 * p; },
+    fixedText: (p) => '回復 +' + (3 * p).toFixed(1) + '/s / 防御 +' + (12 * p).toFixed(0),
+  },
+
+  /* ---- 経済 ---- */
+  {
+    id: 'mod_refinery', name: '精錬炉', type: 'economy',
+    desc: 'Cash獲得量が増加する',
+    fixed(s, p) { s.cashBonus += 0.25 * p; },
+    fixedText: (p) => 'Cash +' + (25 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_mint', name: '自動鋳造機', type: 'economy',
+    desc: 'Coin獲得量が増加する',
+    fixed(s, p) { s.coinBonus += 0.15 * p; },
+    fixedText: (p) => 'Coin +' + (15 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_vault', name: '準備金庫', type: 'economy',
+    desc: '利息と初期資金が増加する',
+    fixed(s, p) { s.interest += 0.015 * p; s.startingCash += 400 * p; },
+    fixedText: (p) => '利息 +' + (1.5 * p).toFixed(1) + '% / 初期$' + formatNumber(400 * p),
+  },
+
+  /* ---- 特殊 ---- */
+  {
+    id: 'mod_orbcore', name: '衛星制御核', type: 'special',
+    desc: 'オーブの威力と速度が上昇する',
+    fixed(s, p) { s.orbDamage += 40 * p; s.orbSpeed += 0.2 * p; },
+    fixedText: (p) => 'オーブ威力 +' + formatNumber(40 * p) + ' / 速度 +' + (0.2 * p).toFixed(2),
+  },
+  {
+    id: 'mod_titankiller', name: '巨獣狩猟装置', type: 'special',
+    desc: 'ボスへの与ダメージが増加する',
+    fixed(s, p) { s.bossDamageMul += 0.2 * p; },
+    fixedText: (p) => 'ボス与ダメ +' + (20 * p).toFixed(0) + '%',
+  },
+  {
+    id: 'mod_gravity', name: '重力制御器', type: 'special',
+    desc: '敵の移動速度を低下させる',
+    fixed(s, p) { s.enemySpeedMul -= Math.min(0.03 * p, 0.25); },
+    fixedText: (p) => '敵速度 -' + Math.min(3 * p, 25).toFixed(1) + '%',
+  },
+];
+
+function blueprintById(id) {
+  for (let i = 0; i < MODULE_BLUEPRINTS.length; i++) {
+    if (MODULE_BLUEPRINTS[i].id === id) return MODULE_BLUEPRINTS[i];
+  }
+  return null;
+}
+
+/**
+ * ランダム能力（サブステータス）。レアリティに応じた個数が付与される。
+ * value は roll の範囲で抽選され、レアリティ倍率が乗る。
+ */
+const MODULE_SUBSTATS = [
+  { id: 'sub_dmg', name: 'ダメージ', roll: [3, 8],
+    apply(s, v) { s.damageMul += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_hp', name: '最大HP', roll: [4, 10],
+    apply(s, v) { s.hpMul += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_aspd', name: '攻撃速度', roll: [2, 6],
+    apply(s, v) { s.attackInterval = s.attackInterval / (1 + v / 100); },
+    format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_crit', name: 'クリティカル率', roll: [1, 4],
+    apply(s, v) { s.critChance += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_critdmg', name: 'クリティカル倍率', roll: [4, 12],
+    apply(s, v) { s.critMultiplier += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_range', name: '射程', roll: [4, 12],
+    apply(s, v) { s.range += v; }, format: (v) => '+' + v.toFixed(0) },
+  { id: 'sub_def', name: '防御力', roll: [5, 15],
+    apply(s, v) { s.defense += v; }, format: (v) => '+' + v.toFixed(0) },
+  { id: 'sub_cash', name: 'Cash獲得', roll: [5, 15],
+    apply(s, v) { s.cashBonus += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_coin', name: 'Coin獲得', roll: [3, 10],
+    apply(s, v) { s.coinBonus += v / 100; }, format: (v) => '+' + v.toFixed(1) + '%' },
+  { id: 'sub_lifesteal', name: 'HP吸収', roll: [0.2, 0.8],
+    apply(s, v) { s.lifesteal += v / 100; }, format: (v) => '+' + v.toFixed(2) + '%' },
+];
+
+function substatById(id) {
+  for (let i = 0; i < MODULE_SUBSTATS.length; i++) {
+    if (MODULE_SUBSTATS[i].id === id) return MODULE_SUBSTATS[i];
+  }
+  return null;
+}
+
+/** モジュールのレベル上限とレベル毎の性能補正 */
+const MODULE_MAX_LEVEL = 20;
+
+/** 所持できるモジュールの上限。超過ぶんは自動でシャードへ変換する */
+const MODULE_INVENTORY_MAX = 300;
+function modulePower(rarity, level) {
+  return rarityById(rarity).power * (1 + level * 0.12);
+}
+
+/** レベルアップに必要なシャード */
+function moduleUpgradeCost(rarity, level) {
+  return Math.floor((6 + level * 4) * (1 + rarityIndex(rarity) * 0.6));
+}
+
+/** 分解・重複で得られるシャード */
+function moduleShardValue(rarity) {
+  return [2, 6, 18, 55, 160, 500][rarityIndex(rarity)];
+}
+
+/* ---------------------------------------------------------
+ * スキン（ガチャ排出の見た目アイテム）
+ * ------------------------------------------------------- */
+
+const SKINS = [
+  { id: 'skin_default', name: 'スタンダード', rarity: 'common',
+    core: '#00e5ff', accent: '#ff2d95', shot: '#5cf0ff' },
+  { id: 'skin_ember', name: 'エンバー', rarity: 'rare',
+    core: '#ff7a3d', accent: '#ffd23d', shot: '#ffb14d' },
+  { id: 'skin_frost', name: 'フロストバイト', rarity: 'epic',
+    core: '#7fd8ff', accent: '#ffffff', shot: '#c8f2ff' },
+  { id: 'skin_void', name: 'ヴォイド', rarity: 'legend',
+    core: '#a561ff', accent: '#ff2d95', shot: '#c79dff' },
+  { id: 'skin_solaris', name: 'ソラリス', rarity: 'mythic',
+    core: '#ffc233', accent: '#ff5c3d', shot: '#ffe07a' },
+  { id: 'skin_singularity', name: 'シンギュラリティ', rarity: 'unique',
+    core: '#3dff9e', accent: '#00e5ff', shot: '#9dffd0' },
+];
+
+function skinById(id) {
+  for (let i = 0; i < SKINS.length; i++) {
+    if (SKINS[i].id === id) return SKINS[i];
+  }
+  return SKINS[0];
+}
+
+/* ---------------------------------------------------------
+ * ガチャ
+ * ------------------------------------------------------- */
+
+const GACHA_SINGLE_COST = 100;
+const GACHA_MULTI_COUNT = 10;
+const GACHA_MULTI_COST = 900;
+
+/**
+ * 排出内容の種別。kind を増やせば新しい排出物を足せる。
+ * weight は種別間の比率。
+ */
+const GACHA_KINDS = [
+  { kind: 'module', weight: 88 },
+  { kind: 'skin', weight: 12 },
+];
+
+/**
+ * 実績。check(ctx) が true を返した時点で解除され、報酬が支払われる。
+ * ctx は Game が組み立てた統計スナップショット。
+ */
+const ACHIEVEMENTS = [
+  { id: 'firstBlood', name: '初陣', desc: '敵を1体撃破する',
+    coin: 1, gem: 0, check: (c) => c.totalKills >= 1 },
+  { id: 'wave5', name: '前哨戦', desc: 'Wave 5 に到達する',
+    coin: 3, gem: 0, check: (c) => c.bestWave >= 5 },
+  { id: 'wave10', name: '防衛線', desc: 'Wave 10 に到達する',
+    coin: 6, gem: 0, check: (c) => c.bestWave >= 10 },
+  { id: 'wave25', name: '要塞', desc: 'Wave 25 に到達する',
+    coin: 15, gem: 1, check: (c) => c.bestWave >= 25 },
+  { id: 'wave50', name: '不落', desc: 'Wave 50 に到達する',
+    coin: 40, gem: 2, check: (c) => c.bestWave >= 50 },
+  { id: 'wave100', name: '無限回廊', desc: 'Wave 100 に到達する',
+    coin: 120, gem: 5, check: (c) => c.bestWave >= 100 },
+  { id: 'kill100', name: '掃討', desc: '累計100体を撃破する',
+    coin: 5, gem: 0, check: (c) => c.totalKills >= 100 },
+  { id: 'kill1000', name: '殲滅者', desc: '累計1000体を撃破する',
+    coin: 20, gem: 1, check: (c) => c.totalKills >= 1000 },
+  { id: 'kill10000', name: '絶滅', desc: '累計10000体を撃破する',
+    coin: 100, gem: 4, check: (c) => c.totalKills >= 10000 },
+  { id: 'bossFirst', name: '巨人狩り', desc: 'ボスを初めて撃破する',
+    coin: 30, gem: 2, check: (c) => c.bossKills >= 1 },
+  { id: 'boss10', name: '討伐隊', desc: 'ボスを10体撃破する',
+    coin: 150, gem: 6, check: (c) => c.bossKills >= 10 },
+  { id: 'rich', name: '軍需産業', desc: '一度の周回で $100K を所持する',
+    coin: 10, gem: 0, check: (c) => c.maxCash >= 100000 },
+  { id: 'richer', name: '経済制圧', desc: '一度の周回で $10M を所持する',
+    coin: 50, gem: 2, check: (c) => c.maxCash >= 10000000 },
+  { id: 'upgrade100', name: '改造狂', desc: '強化の合計レベルを100にする',
+    coin: 12, gem: 0, check: (c) => c.upgradeLevels >= 100 },
+  { id: 'upgrade1000', name: '過剰武装', desc: '強化の合計レベルを1000にする',
+    coin: 60, gem: 3, check: (c) => c.upgradeLevels >= 1000 },
+  { id: 'codexAll', name: '観測完了', desc: '全ての敵性体を図鑑に記録する',
+    coin: 45, gem: 3, check: (c) => c.discoveredCount >= ENEMY_TYPES.length },
+  { id: 'research10', name: '研究者', desc: '研究の合計レベルを10にする',
+    coin: 8, gem: 0, check: (c) => c.researchLevels >= 10 },
+  { id: 'research100', name: '技術特異点', desc: '研究の合計レベルを100にする',
+    coin: 80, gem: 4, check: (c) => c.researchLevels >= 100 },
+  { id: 'runs10', name: '不屈', desc: '10回プレイする',
+    coin: 10, gem: 0, check: (c) => c.totalRuns >= 10 },
+  { id: 'wallMaster', name: '鉄壁', desc: '防御壁を展開した状態でWave20をクリア',
+    coin: 25, gem: 1, check: (c) => c.bestWaveWithWall >= 20 },
+  { id: 'firstPull', name: '初回排出', desc: 'ガチャを1回引く',
+    coin: 5, gem: 0, check: (c) => c.gachaPulls >= 1 },
+  { id: 'pull100', name: '収集家', desc: 'ガチャを100回引く',
+    coin: 60, gem: 3, check: (c) => c.gachaPulls >= 100 },
+  { id: 'fullEquip', name: '完全装備', desc: '4種すべてのモジュールを装備する',
+    coin: 30, gem: 2, check: (c) => c.equippedCount >= MODULE_TYPES.length },
+  { id: 'legendModule', name: '伝説の設計', desc: 'Legend以上のモジュールを入手する',
+    coin: 50, gem: 3, check: (c) => c.bestModuleRarity >= 3 },
+  { id: 'moduleMax', name: '限界突破', desc: 'モジュールを +20 まで強化する',
+    coin: 80, gem: 4, check: (c) => c.bestModuleLevel >= MODULE_MAX_LEVEL },
 ];
 
 const SHOP_CATEGORIES = [
@@ -523,6 +1302,126 @@ function formatNumber(n) {
 
 function upgradeCostAt(u, level) {
   return Math.floor(u.baseCost * Math.pow(u.growth, level));
+}
+
+/** 重み付き抽選の共通処理 */
+function weightedPick(list) {
+  let total = 0;
+  for (let i = 0; i < list.length; i++) total += list[i].weight;
+  let r = Math.random() * total;
+  for (let i = 0; i < list.length; i++) {
+    r -= list[i].weight;
+    if (r <= 0) return list[i];
+  }
+  return list[list.length - 1];
+}
+
+/** レアリティを抽選する。minRarity を指定すると下限を保証する */
+function rollRarity(minRarityIndex) {
+  const pool = minRarityIndex
+    ? RARITIES.slice(minRarityIndex)
+    : RARITIES;
+  return weightedPick(pool);
+}
+
+let _moduleUid = 1;
+function nextModuleUid() {
+  return 'm' + (Date.now().toString(36)) + '_' + (_moduleUid++);
+}
+
+/** モジュールを1つ生成する */
+function createModule(blueprint, rarity) {
+  const rar = rarityById(rarity);
+  const subs = [];
+  const pool = MODULE_SUBSTATS.slice();
+  for (let i = 0; i < rar.subs && pool.length > 0; i++) {
+    const idx = Math.floor(Math.random() * pool.length);
+    const def = pool.splice(idx, 1)[0];
+    const [lo, hi] = def.roll;
+    const value = (lo + Math.random() * (hi - lo)) * (1 + rarityIndex(rarity) * 0.25);
+    subs.push({ id: def.id, value: Math.round(value * 100) / 100 });
+  }
+  return {
+    uid: nextModuleUid(),
+    bp: blueprint.id,
+    rarity: rarity,
+    level: 0,
+    subs: subs,
+  };
+}
+
+/** BASE_STATS へ永続研究とLAB研究の効果を適用した値を返す（周回開始時の土台） */
+function computeResearchStats(equippedModules) {
+  const s = Object.assign({}, BASE_STATS);
+  for (let i = 0; i < RESEARCH.length; i++) {
+    const r = RESEARCH[i];
+    if (r.level > 0) r.effect(s, r.level);
+  }
+  for (let i = 0; i < LAB_RESEARCH.length; i++) {
+    const r = LAB_RESEARCH[i];
+    if (r.level > 0) r.effect(s, r.level);
+  }
+  // 装備中モジュールの固定能力とランダム能力
+  if (equippedModules) {
+    for (let i = 0; i < equippedModules.length; i++) {
+      applyModuleToStats(s, equippedModules[i]);
+    }
+  }
+  return s;
+}
+
+/** モジュール1つぶんの効果をステータスへ適用する */
+function applyModuleToStats(s, mod) {
+  if (!mod) return;
+  const bp = blueprintById(mod.bp);
+  if (!bp) return;
+  const power = modulePower(mod.rarity, mod.level);
+  bp.fixed(s, power);
+  for (let i = 0; i < mod.subs.length; i++) {
+    const def = substatById(mod.subs[i].id);
+    if (def) def.apply(s, mod.subs[i].value);
+  }
+}
+
+/** LAB研究の着手費用（Coin） */
+function labCostAt(r, level) {
+  return Math.floor(r.baseCost * Math.pow(r.costGrowth, level));
+}
+
+/** LAB研究の所要時間（秒）。上限を超えないようクランプする */
+function labDurationAt(r, level) {
+  const raw = r.baseDuration * Math.pow(r.durationGrowth, level);
+  return Math.floor(Math.min(raw, CONFIG.LAB_MAX_DURATION));
+}
+
+/** 秒数を「1時間 23分」形式へ整形 */
+function formatDuration(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const ss = sec % 60;
+  if (d > 0) return d + '日 ' + h + '時間';
+  if (h > 0) return h + '時間 ' + m + '分';
+  if (m > 0) return m + '分 ' + ss + '秒';
+  return ss + '秒';
+}
+
+/** 残り時間を即時完了するのに必要なGem */
+function labSpeedupGemCost(remainingSec) {
+  return Math.max(1, Math.ceil(remainingSec / LAB_SPEEDUP_SECONDS_PER_GEM));
+}
+
+/** 到達Waveに対して解放済みのTierかどうか */
+function isTierUnlocked(tier, bestWave) {
+  return bestWave >= tierRequiredWave(tier);
+}
+
+/** 配列内のレベル合計（実績判定に使用） */
+function totalLevels(list) {
+  let sum = 0;
+  for (let i = 0; i < list.length; i++) sum += list[i].level;
+  return sum;
 }
 
 function calcBuyPlan(u, cash, mult) {
@@ -572,6 +1471,113 @@ function tracePolygon(ctx, x, y, r, sides, rotation) {
     else ctx.lineTo(px, py);
   }
   ctx.closePath();
+}
+
+/* =========================================================
+ * 3.5 セーブ / ロード（localStorage）
+ * ======================================================= */
+
+const SAVE_KEY = 'icd_save_v1';
+
+/**
+ * 永続データの保存・復元。
+ * プライベートブラウズ等で localStorage が使えない環境でも
+ * 例外を握りつぶしてメモリ上だけで動作を継続する。
+ */
+class SaveManager {
+  constructor() {
+    this.available = this.probe();
+    this.saveTimer = 0;
+    this.dirty = false;
+  }
+
+  probe() {
+    try {
+      const k = '__icd_probe__';
+      window.localStorage.setItem(k, '1');
+      window.localStorage.removeItem(k);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 初期値（セーブが無い場合や壊れている場合に使う） */
+  static defaultMeta() {
+    return {
+      version: 1,
+      coin: 0,
+      gem: 0,
+      research: {},
+      achievements: {},
+      codexKills: {},
+      discovered: [],
+      bestWave: 0,
+      bestWaveWithWall: 0,
+      totalKills: 0,
+      bossKills: 0,
+      totalRuns: 0,
+      maxCash: 0,
+      playTime: 0,
+      soundOn: true,
+      selectedStartWave: 1,
+      unlockedTiers: {},        // 解放演出を出し終えたTier
+      favorites: {},            // ショップのお気に入り
+      gameSpeed: 1,             // 選択中のゲームスピード
+      lastExit: 0,              // 最後にゲームを離れた時刻(ms)
+      pendingCash: 0,           // オフライン報酬のCash（次周回の開始資金へ加算）
+      labLevels: {},            // LAB研究の到達レベル
+      labJobs: [],              // 進行中の研究 [{id, level, endsAt}]
+      labSlots: 1,              // 研究スロット数
+      gemMilestones: {},        // 受取済みの高Wave到達報酬
+      adDate: '',               // 広告視聴日（日付が変わればリセット）
+      adCount: 0,               // その日の視聴回数
+      modules: [],              // 所持モジュール
+      equipped: {},             // 種類ID → モジュールuid
+      shards: 0,                // モジュール強化素材
+      skins: ['skin_default'],  // 所持スキン
+      activeSkin: 'skin_default',
+      gachaPulls: 0,            // ガチャ回数（実績・演出用）
+    };
+  }
+
+  load() {
+    const base = SaveManager.defaultMeta();
+    if (!this.available) return base;
+    try {
+      const raw = window.localStorage.getItem(SAVE_KEY);
+      if (!raw) return base;
+      const data = JSON.parse(raw);
+      if (!data || typeof data !== 'object') return base;
+      // 既知のキーだけを取り込む（将来のバージョン差異に強くする）
+      for (const key of Object.keys(base)) {
+        if (data[key] !== undefined && typeof data[key] === typeof base[key]) {
+          base[key] = data[key];
+        }
+      }
+      if (!Array.isArray(base.discovered)) base.discovered = [];
+      return base;
+    } catch (e) {
+      console.warn('セーブデータの読み込みに失敗しました', e);
+      return base;
+    }
+  }
+
+  save(meta) {
+    if (!this.available) return false;
+    try {
+      window.localStorage.setItem(SAVE_KEY, JSON.stringify(meta));
+      return true;
+    } catch (e) {
+      console.warn('セーブに失敗しました', e);
+      return false;
+    }
+  }
+
+  clear() {
+    if (!this.available) return;
+    try { window.localStorage.removeItem(SAVE_KEY); } catch (e) { /* noop */ }
+  }
 }
 
 /* =========================================================
@@ -698,6 +1704,49 @@ class Sfx {
     this._tone(1050, t + 0.05, 0.1, 'sine', 0.06);
     this._tone(1400, t + 0.11, 0.12, 'sine', 0.05);
   }
+  achievement() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    // 明るい上昇アルペジオ
+    this._tone(660, t, 0.10, 'triangle', 0.07);
+    this._tone(880, t + 0.09, 0.10, 'triangle', 0.07);
+    this._tone(1320, t + 0.18, 0.22, 'triangle', 0.07);
+  }
+  gachaCommon() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(520, t, 0.06, 'triangle', 0.05);
+    this._tone(700, t + 0.05, 0.08, 'triangle', 0.04);
+  }
+  /** tier が高いほど派手にする */
+  gachaRare(tier) {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    const notes = [523, 659, 784, 1047, 1319, 1568];
+    const n = Math.min(3 + tier, notes.length);
+    for (let i = 0; i < n; i++) {
+      this._tone(notes[i], t + i * 0.07, 0.18, 'triangle', 0.07);
+    }
+    this._noise(t + n * 0.07, 0.5, 0.07, 4000);
+    if (tier >= 4) this._tone(90, t, 0.8, 'sine', 0.1, 45);
+  }
+  unlockTier() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    // 華やかな上昇音（新Tier解放の合図）
+    this._tone(523, t, 0.12, 'square', 0.06);
+    this._tone(659, t + 0.10, 0.12, 'square', 0.06);
+    this._tone(784, t + 0.20, 0.12, 'square', 0.06);
+    this._tone(1047, t + 0.30, 0.35, 'triangle', 0.08);
+    this._noise(t + 0.30, 0.4, 0.06, 3000);
+  }
+  research() {
+    if (!this.enabled || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    this._tone(440, t, 0.09, 'sine', 0.07);
+    this._tone(660, t + 0.08, 0.09, 'sine', 0.07);
+    this._tone(990, t + 0.16, 0.18, 'sine', 0.06);
+  }
   bossAppear() {
     if (!this.enabled || !this.ctx) return;
     const t = this.ctx.currentTime;
@@ -794,13 +1843,14 @@ class Enemy {
     this.spawnAnim = 0;      // 出現時のスケールアニメーション
     this.wallContactCd = 0;  // 壁の反射ダメージのクールダウン
   }
-  init(type, wave, x, y) {
+  init(type, wave, x, y, speedMul) {
     this.type = type;
     this.x = x; this.y = y;
     this.maxHp = type.baseHp * WAVE_RULES.hpMul(wave);
     this.hp = this.maxHp;
     this.atk = type.baseAtk * WAVE_RULES.atkMul(wave);
-    this.speed = type.baseSpeed * WAVE_RULES.speedMul(wave);
+    this.speed =
+      type.baseSpeed * WAVE_RULES.speedMul(wave) * (speedMul === undefined ? 1 : speedMul);
     this.size = type.size;
     this.cash = Math.ceil(type.cash * WAVE_RULES.cashMul(wave));
     this.coin = type.coin;
@@ -825,12 +1875,19 @@ class Enemy {
 
     const type = this.type;
     let moving = true;
-    if (type.behavior === 'ranged' && dist <= type.stopDistance) {
-      moving = false;
-      this.fireTimer -= dt;
-      if (this.fireTimer <= 0) {
-        this.fireTimer = type.fireInterval;
-        game.spawnEnemyProjectile(this);
+    if (type.behavior === 'ranged') {
+      // 反撃不能な位置で膠着しないための保険。
+      // 停止できるのは「プレイヤーの射程内」に入っている場合のみとし、
+      // それより外なら stopDistance に達していても前進を続ける。
+      const counterRange = game.player.stats.range - 12;
+      if (dist <= type.stopDistance && dist <= counterRange) moving = false;
+
+      if (dist <= type.stopDistance) {
+        this.fireTimer -= dt;
+        if (this.fireTimer <= 0) {
+          this.fireTimer = type.fireInterval;
+          game.spawnEnemyProjectile(this);
+        }
       }
     }
 
@@ -1087,11 +2144,17 @@ class Player {
     const prevMaxHp = this.stats ? this.stats.maxHp : BASE_STATS.maxHp;
     const prevMaxWall = this.stats ? this.maxWallHp : 0;
 
-    const s = Object.assign({}, BASE_STATS);
+    // 永続研究・LAB・装備モジュールを適用した値を土台とし、
+    // その上に周回内アップグレードを乗せる
+    const s = computeResearchStats(this.game.equippedModules());
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
       if (u.level > 0) u.effect(s, u.level);
     }
+    // 倍率系は全ての加算が終わったあとに適用する
+    s.damage *= s.damageMul;
+    s.maxHp *= s.hpMul;
+    if (s.enemySpeedMul < 0.1) s.enemySpeedMul = 0.1;
     this.stats = s;
 
     const hpGain = s.maxHp - prevMaxHp;
@@ -1161,6 +2224,15 @@ class Player {
 
     if (this.rapidFireTimer <= 0 && Math.random() < s.rapidFireChance) {
       this.rapidFireTimer = s.rapidFireDuration;
+    }
+
+    // Omni Strike: 射程内の敵すべてへ同時攻撃
+    if (s.omniStrikeChance > 0 && Math.random() < s.omniStrikeChance) {
+      const all = this.findNearestTargets(64);
+      for (let i = 0; i < all.length; i++) this.fireAt(all[i]);
+      this.game.flashScreen(0.1, '#8df3ff');
+      this.game.sfx.laser();
+      return true;
     }
 
     for (let i = 0; i < targets.length; i++) this.fireAt(targets[i]);
@@ -1370,7 +2442,7 @@ class WaveManager {
     const pt = this.randomSpawnPoint(g._spawnPt);
 
     const e = g.enemyPool.acquire();
-    e.init(type, this.wave, pt.x, pt.y);
+    e.init(type, this.wave, pt.x, pt.y, g.player.stats.enemySpeedMul);
     if (Math.random() < g.player.stats.enemyHpSkip) e.hp *= 0.5;
     g.enemies.push(e);
     g.discoverEnemy(type.id);
@@ -1382,7 +2454,7 @@ class WaveManager {
     const pt = this.randomSpawnPoint(g._spawnPt);
 
     const e = g.enemyPool.acquire();
-    e.init(type, this.wave, pt.x, pt.y);
+    e.init(type, this.wave, pt.x, pt.y, g.player.stats.enemySpeedMul);
     g.enemies.push(e);
     g.currentBoss = e;
     g.discoverEnemy(type.id);
@@ -1427,6 +2499,9 @@ class Shop {
     this.isOpen = false;
     this.updateTimer = 0;
     this.itemEls = new Map();
+    this.searchQuery = '';
+    this.blinkTier = null;
+    this._blinkTimer = null;
 
     this.bindEvents();
     this.buildList();
@@ -1450,6 +2525,18 @@ class Shop {
       });
     });
 
+    const search = document.getElementById('shop-search');
+    search.addEventListener('input', () => {
+      this.searchQuery = search.value.trim().toLowerCase();
+      this.buildList();
+    });
+    document.getElementById('btn-search-clear')
+      .addEventListener('click', () => {
+        search.value = '';
+        this.searchQuery = '';
+        this.buildList();
+      });
+
     document.getElementById('btn-buy-mult')
       .addEventListener('click', () => {
         this.buyMultIndex = (this.buyMultIndex + 1) % BUY_MULTIPLIERS.length;
@@ -1462,7 +2549,7 @@ class Shop {
 
   toggle() { this.isOpen ? this.close() : this.open(); }
   open() {
-    this.game.codex.close();
+    this.game.closePanels(this);
     this.isOpen = true;
     this.panel.classList.remove('closed');
     this.refresh(true);
@@ -1472,16 +2559,68 @@ class Shop {
     this.panel.classList.add('closed');
   }
 
-  buildList() {
-    this.listEl.textContent = '';
-    this.itemEls.clear();
+  /** 検索・お気に入り・解放状態を考慮した表示順のリストを返す */
+  visibleUpgrades() {
+    const g = this.game;
+    const query = this.searchQuery;
+    const list = [];
 
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
       if (u.category !== this.activeCategory) continue;
 
+      const unlocked = g.isUnlocked(u);
+      // 未解放項目は名前を伏せるため、検索対象から外す
+      if (query) {
+        if (!unlocked) continue;
+        const hay = (u.name + ' ' + u.description).toLowerCase();
+        if (hay.indexOf(query) === -1) continue;
+      }
+      list.push(u);
+    }
+
+    const fav = g.meta.favorites;
+    list.sort((a, b) => {
+      const fa = fav[a.id] ? 0 : 1;
+      const fb = fav[b.id] ? 0 : 1;
+      if (fa !== fb) return fa - fb;
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      return UPGRADES.indexOf(a) - UPGRADES.indexOf(b);
+    });
+    return list;
+  }
+
+  buildList() {
+    const g = this.game;
+    this.listEl.textContent = '';
+    this.itemEls.clear();
+
+    const list = this.visibleUpgrades();
+
+    if (list.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'shop-empty';
+      empty.textContent = '該当する強化がありません';
+      this.listEl.appendChild(empty);
+      return;
+    }
+
+    for (let i = 0; i < list.length; i++) {
+      const u = list[i];
+      const unlocked = g.isUnlocked(u);
+
       const root = document.createElement('div');
-      root.className = 'shop-item';
+      root.className = 'shop-item' + (unlocked ? '' : ' locked');
+
+      // ---- お気に入り ----
+      const star = document.createElement('button');
+      star.className = 'fav-btn' + (g.meta.favorites[u.id] ? ' on' : '');
+      star.textContent = g.meta.favorites[u.id] ? '★' : '☆';
+      if (unlocked) {
+        star.addEventListener('click', () => this.toggleFavorite(u));
+      } else {
+        star.classList.add('hidden-el');
+      }
 
       const info = document.createElement('div');
       info.className = 'shop-item-info';
@@ -1490,15 +2629,21 @@ class Shop {
       top.className = 'shop-item-top';
       const name = document.createElement('span');
       name.className = 'shop-item-name';
-      name.textContent = u.name;
+      name.textContent = unlocked ? u.name : '？？？';
       const level = document.createElement('span');
       level.className = 'shop-item-level';
+      const badge = document.createElement('span');
+      badge.className = 'reco-badge';
+      badge.textContent = 'おすすめ';
       top.appendChild(name);
       top.appendChild(level);
+      top.appendChild(badge);
 
       const desc = document.createElement('div');
       desc.className = 'shop-item-desc';
-      desc.textContent = u.description;
+      desc.textContent = unlocked
+        ? u.description
+        : 'WAVE ' + tierRequiredWave(u.tier) + ' で解放';
 
       const value = document.createElement('div');
       value.className = 'shop-item-value';
@@ -1515,24 +2660,71 @@ class Shop {
       cost.className = 'buy-cost';
       btn.appendChild(count);
       btn.appendChild(cost);
-      btn.addEventListener('click', () => this.buy(u));
+      if (unlocked) btn.addEventListener('click', () => this.buy(u));
 
+      root.appendChild(star);
       root.appendChild(info);
       root.appendChild(btn);
       this.listEl.appendChild(root);
 
-      this.itemEls.set(u.id, { root, level, value, btn, count, cost });
+      this.itemEls.set(u.id, {
+        root, level, value, btn, count, cost, badge, star, unlocked,
+      });
     }
     this.refresh(true);
+
+    // 解放直後のTierは点滅させて気付けるようにする
+    if (this.blinkTier !== null) {
+      this.itemEls.forEach((els, id) => {
+        const u = UPGRADES.find((x) => x.id === id);
+        if (u && u.tier === this.blinkTier) els.root.classList.add('just-unlocked');
+      });
+    }
+  }
+
+  toggleFavorite(u) {
+    const fav = this.game.meta.favorites;
+    if (fav[u.id]) delete fav[u.id];
+    else fav[u.id] = true;
+    this.game.requestSave();
+    this.game.sfx.unlock();
+    this.buildList();
+  }
+
+  /** 解放直後のTierを記録し、次回描画で点滅させる */
+  markTierUnlocked(tier) {
+    this.blinkTier = tier;
+    if (this.isOpen) this.buildList();
+    // 一定時間で点滅を解除する
+    if (this._blinkTimer) clearTimeout(this._blinkTimer);
+    this._blinkTimer = setTimeout(() => {
+      this.blinkTier = null;
+      if (this.isOpen) this.buildList();
+    }, 12000);
   }
 
   refresh(force) {
     if (!this.isOpen && !force) return;
-    const cash = this.game.cash;
+    const g = this.game;
+    const cash = g.cash;
     this.cashEl.textContent = formatNumber(cash);
 
     this.itemEls.forEach((els, id) => {
       const u = UPGRADES.find((x) => x.id === id);
+      if (!u) return;
+
+      // ---- 未解放 ----
+      if (!els.unlocked) {
+        els.level.textContent = '';
+        els.value.textContent = 'TIER ' + u.tier;
+        els.badge.classList.remove('show');
+        els.btn.classList.add('disabled');
+        els.btn.classList.remove('maxed');
+        els.count.textContent = 'LOCK';
+        els.cost.textContent = 'W' + tierRequiredWave(u.tier);
+        return;
+      }
+
       const maxed = u.level >= u.maxLevel;
       els.level.textContent = 'Lv ' + u.level + '/' + u.maxLevel;
 
@@ -1552,6 +2744,12 @@ class Shop {
         els.value.appendChild(next);
       }
 
+      // ---- おすすめ判定: 所持金の25%以下で買える、伸びしろのある項目 ----
+      const single = upgradeCostAt(u, u.level);
+      const recommended =
+        !maxed && cash > 0 && single <= cash * 0.25 && u.level < u.maxLevel * 0.8;
+      els.badge.classList.toggle('show', recommended);
+
       if (maxed) {
         els.btn.classList.add('maxed');
         els.btn.classList.remove('disabled');
@@ -1570,6 +2768,7 @@ class Shop {
       }
     });
   }
+
 
   buy(u) {
     const g = this.game;
@@ -1634,7 +2833,7 @@ class Codex {
 
   toggle() { this.isOpen ? this.close() : this.open(); }
   open() {
-    this.game.shop.close();
+    this.game.closePanels(this);
     this.isOpen = true;
     this.panel.classList.remove('closed');
     this.build();
@@ -1701,6 +2900,1121 @@ class Codex {
 }
 
 /* =========================================================
+ * 9.5 永続研究パネル（RESEARCH配列から自動生成）
+ * ======================================================= */
+
+class Research {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('research-panel');
+    this.listEl = document.getElementById('research-list');
+    this.coinEl = document.getElementById('val-research-coin');
+    this.isOpen = false;
+    this.itemEls = new Map();
+
+    document.getElementById('btn-research')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-research-close')
+      .addEventListener('click', () => this.close());
+
+    this.build();
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.refresh();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  build() {
+    this.listEl.textContent = '';
+    this.itemEls.clear();
+
+    for (let i = 0; i < RESEARCH.length; i++) {
+      const r = RESEARCH[i];
+      const unlocked = this.game.isUnlocked(r);
+
+      const root = document.createElement('div');
+      root.className = 'shop-item' + (unlocked ? '' : ' locked');
+
+      const info = document.createElement('div');
+      info.className = 'shop-item-info';
+
+      const top = document.createElement('div');
+      top.className = 'shop-item-top';
+      const name = document.createElement('span');
+      name.className = 'shop-item-name';
+      name.textContent = unlocked ? r.name : '？？？';
+      const level = document.createElement('span');
+      level.className = 'shop-item-level';
+      top.appendChild(name);
+      top.appendChild(level);
+
+      const desc = document.createElement('div');
+      desc.className = 'shop-item-desc';
+      desc.textContent = unlocked
+        ? r.description
+        : 'WAVE ' + tierRequiredWave(r.tier) + ' で解放';
+
+      const value = document.createElement('div');
+      value.className = 'shop-item-value';
+
+      info.appendChild(top);
+      info.appendChild(desc);
+      info.appendChild(value);
+
+      const btn = document.createElement('button');
+      btn.className = 'shop-buy-btn research-buy-btn';
+      const count = document.createElement('span');
+      count.className = 'buy-count';
+      count.textContent = '研究';
+      const cost = document.createElement('span');
+      cost.className = 'buy-cost';
+      btn.appendChild(count);
+      btn.appendChild(cost);
+      if (unlocked) btn.addEventListener('click', () => this.buy(r));
+
+      root.appendChild(info);
+      root.appendChild(btn);
+      this.listEl.appendChild(root);
+
+      this.itemEls.set(r.id, { root, level, value, btn, count, cost, unlocked });
+    }
+    this.refresh();
+  }
+
+  refresh() {
+    const coin = this.game.meta.coin;
+    this.coinEl.textContent = formatNumber(coin);
+
+    for (let i = 0; i < RESEARCH.length; i++) {
+      const r = RESEARCH[i];
+      const els = this.itemEls.get(r.id);
+      if (!els) continue;
+
+      if (!els.unlocked) {
+        els.level.textContent = '';
+        els.value.textContent = 'TIER ' + r.tier;
+        els.btn.classList.add('disabled');
+        els.btn.classList.remove('maxed');
+        els.count.textContent = 'LOCK';
+        els.cost.textContent = 'W' + tierRequiredWave(r.tier);
+        continue;
+      }
+
+      const maxed = r.level >= r.maxLevel;
+      const price = upgradeCostAt(r, r.level);
+      els.level.textContent = 'Lv ' + r.level + '/' + r.maxLevel;
+      els.value.textContent = maxed
+        ? r.valueText(r.level)
+        : r.valueText(r.level) + ' → ' + r.valueText(r.level + 1);
+
+      if (maxed) {
+        els.btn.classList.add('maxed');
+        els.btn.classList.remove('disabled');
+        els.count.textContent = 'MAX';
+        els.cost.textContent = '─';
+      } else {
+        els.btn.classList.remove('maxed');
+        els.btn.classList.toggle('disabled', coin < price);
+        els.count.textContent = '研究';
+        els.cost.textContent = formatNumber(price) + '◎';
+      }
+    }
+  }
+
+  buy(r) {
+    const g = this.game;
+    g.sfx.unlock();
+    const els = this.itemEls.get(r.id);
+    if (r.level >= r.maxLevel) return;
+    if (!g.isUnlocked(r)) return;
+
+    const price = upgradeCostAt(r, r.level);
+    if (g.meta.coin < price) {
+      g.sfx.deny();
+      if (els) {
+        els.btn.classList.remove('deny');
+        void els.btn.offsetWidth;
+        els.btn.classList.add('deny');
+      }
+      return;
+    }
+
+    g.meta.coin -= price;
+    r.level++;
+    g.player.recalc();
+    g.sfx.research();
+
+    if (els) {
+      els.btn.classList.remove('glow');
+      els.level.classList.remove('pop');
+      void els.btn.offsetWidth;
+      els.btn.classList.add('glow');
+      els.level.classList.add('pop');
+    }
+
+    g.requestSave();
+    g.flushSave();
+    g.checkAchievements();
+    this.refresh();
+    g.hudDirty = true;
+  }
+}
+
+/* =========================================================
+ * 9.55 LABパネル（LAB_RESEARCH配列から自動生成）
+ * ======================================================= */
+
+class Lab {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('lab-panel');
+    this.listEl = document.getElementById('lab-list');
+    this.coinEl = document.getElementById('val-lab-coin');
+    this.gemEl = document.getElementById('val-lab-gem');
+    this.slotEl = document.getElementById('lab-slot-info');
+    this.slotBtn = document.getElementById('btn-lab-slot');
+    this.adBtn = document.getElementById('btn-lab-ad');
+    this.activeCategory = LAB_CATEGORIES[0].id;
+    this.isOpen = false;
+    this.itemEls = new Map();
+    this.tickTimer = 0;
+
+    document.getElementById('btn-lab')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-lab-close')
+      .addEventListener('click', () => this.close());
+
+    const tabs = document.querySelectorAll('.lab-tab');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tabs.forEach((t) => t.classList.remove('active'));
+        tab.classList.add('active');
+        this.activeCategory = tab.dataset.category;
+        this.build();
+      });
+    });
+
+    this.slotBtn.addEventListener('click', () => this.onBuySlot());
+    this.adBtn.addEventListener('click', () => this.onWatchAd());
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.build();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  onBuySlot() {
+    const g = this.game;
+    g.sfx.unlock();
+    if (g.buyLabSlot()) {
+      g.sfx.research();
+      g.showToast('研究スロットを拡張しました');
+    } else {
+      g.sfx.deny();
+    }
+    this.build();
+  }
+
+  onWatchAd() {
+    const g = this.game;
+    g.sfx.unlock();
+    const amount = g.watchAd();
+    if (amount > 0) {
+      g.showToast('広告視聴報酬  +' + amount + ' ◆', 2400);
+      g.sfx.achievement();
+    } else {
+      g.sfx.deny();
+      g.showToast('本日の視聴回数の上限に達しています');
+    }
+    this.refresh();
+  }
+
+  build() {
+    const g = this.game;
+    this.listEl.textContent = '';
+    this.itemEls.clear();
+
+    for (let i = 0; i < LAB_RESEARCH.length; i++) {
+      const r = LAB_RESEARCH[i];
+      if (r.category !== this.activeCategory) continue;
+      const unlocked = g.isUnlocked(r);
+
+      const root = document.createElement('div');
+      root.className = 'lab-item' + (unlocked ? '' : ' locked');
+
+      const info = document.createElement('div');
+      info.className = 'shop-item-info';
+
+      const top = document.createElement('div');
+      top.className = 'shop-item-top';
+      const name = document.createElement('span');
+      name.className = 'shop-item-name';
+      name.textContent = unlocked ? r.name : '？？？';
+      const level = document.createElement('span');
+      level.className = 'shop-item-level';
+      top.appendChild(name);
+      top.appendChild(level);
+
+      const desc = document.createElement('div');
+      desc.className = 'shop-item-desc';
+      desc.textContent = unlocked
+        ? r.description
+        : 'WAVE ' + tierRequiredWave(r.tier) + ' で解放';
+
+      const value = document.createElement('div');
+      value.className = 'shop-item-value';
+
+      const meta = document.createElement('div');
+      meta.className = 'lab-meta';
+
+      info.appendChild(top);
+      info.appendChild(desc);
+      info.appendChild(value);
+      info.appendChild(meta);
+
+      // 進行バー
+      const bar = document.createElement('div');
+      bar.className = 'lab-bar';
+      const fill = document.createElement('div');
+      fill.className = 'lab-bar-fill';
+      bar.appendChild(fill);
+      info.appendChild(bar);
+
+      const btn = document.createElement('button');
+      btn.className = 'shop-buy-btn lab-btn';
+      const count = document.createElement('span');
+      count.className = 'buy-count';
+      const cost = document.createElement('span');
+      cost.className = 'buy-cost';
+      btn.appendChild(count);
+      btn.appendChild(cost);
+      if (unlocked) btn.addEventListener('click', () => this.onAction(r));
+
+      root.appendChild(info);
+      root.appendChild(btn);
+      this.listEl.appendChild(root);
+
+      this.itemEls.set(r.id, {
+        root, level, value, meta, bar, fill, btn, count, cost, unlocked,
+      });
+    }
+    this.refresh();
+  }
+
+  /** ボタン押下: 未着手なら開始、進行中ならGemで即完了 */
+  onAction(r) {
+    const g = this.game;
+    g.sfx.unlock();
+    const job = g.labJobOf(r.id);
+
+    if (job) {
+      if (g.rushLabJob(job)) {
+        g.showToast(r.name + ' の研究を完了させました');
+      } else {
+        g.sfx.deny();
+        g.showToast('Gem が不足しています');
+      }
+      this.build();
+      return;
+    }
+
+    if (r.level >= r.maxLevel) return;
+    if (g.labFreeSlots() <= 0) {
+      g.sfx.deny();
+      g.showToast('空いている研究スロットがありません');
+      return;
+    }
+    if (g.startLabJob(r)) {
+      g.sfx.buy();
+      g.showToast(r.name + ' の研究を開始しました');
+    } else {
+      g.sfx.deny();
+      g.showToast('Coin が不足しています');
+    }
+    this.build();
+  }
+
+  refresh() {
+    const g = this.game;
+    const now = Date.now();
+
+    this.coinEl.textContent = formatNumber(g.meta.coin);
+    this.gemEl.textContent = formatNumber(g.meta.gem);
+    this.slotEl.textContent =
+      '研究スロット ' + g.meta.labJobs.length + ' / ' + g.meta.labSlots;
+
+    // スロット拡張ボタン
+    if (g.meta.labSlots >= LAB_SLOT_COSTS.length) {
+      this.slotBtn.textContent = 'スロット最大';
+      this.slotBtn.classList.add('disabled');
+    } else {
+      const price = LAB_SLOT_COSTS[g.meta.labSlots];
+      this.slotBtn.textContent = 'スロット拡張  ' + price + '◆';
+      this.slotBtn.classList.toggle('disabled', g.meta.gem < price);
+    }
+
+    const adLeft = g.adRemainingToday();
+    this.adBtn.textContent = adLeft > 0
+      ? '広告を見て +5◆（本日あと' + adLeft + '回）'
+      : '本日の視聴上限に達しました';
+    this.adBtn.classList.toggle('disabled', adLeft <= 0);
+
+    this.itemEls.forEach((els, id) => {
+      const r = g.labById(id);
+      if (!r) return;
+      const job = g.labJobOf(id);
+      const maxed = r.level >= r.maxLevel;
+
+      if (!els.unlocked) {
+        els.level.textContent = '';
+        els.value.textContent = 'TIER ' + r.tier;
+        els.meta.textContent = '';
+        els.bar.classList.remove('show');
+        els.btn.classList.add('disabled');
+        els.btn.classList.remove('maxed');
+        els.count.textContent = 'LOCK';
+        els.cost.textContent = 'W' + tierRequiredWave(r.tier);
+        return;
+      }
+
+      els.level.textContent = 'Lv ' + r.level + '/' + r.maxLevel;
+      els.value.textContent = maxed
+        ? r.valueText(r.level)
+        : r.valueText(r.level) + ' → ' + r.valueText(r.level + 1);
+
+      // ---- 進行中 ----
+      if (job) {
+        const duration = labDurationAt(r, job.level - 1);
+        const remaining = Math.max(0, (job.endsAt - now) / 1000);
+        const progress = duration > 0 ? 1 - remaining / duration : 1;
+        els.root.classList.add('running');
+        els.bar.classList.add('show');
+        els.fill.style.width = (Math.min(Math.max(progress, 0), 1) * 100).toFixed(1) + '%';
+        els.meta.textContent = '残り ' + formatDuration(remaining);
+        els.btn.classList.remove('disabled', 'maxed');
+        els.count.textContent = '即完了';
+        els.cost.textContent = labSpeedupGemCost(remaining) + '◆';
+        return;
+      }
+
+      els.root.classList.remove('running');
+      els.bar.classList.remove('show');
+
+      if (maxed) {
+        els.meta.textContent = '研究完了';
+        els.btn.classList.add('maxed');
+        els.btn.classList.remove('disabled');
+        els.count.textContent = 'MAX';
+        els.cost.textContent = '─';
+        return;
+      }
+
+      const price = labCostAt(r, r.level);
+      const duration = labDurationAt(r, r.level);
+      els.meta.textContent = '所要 ' + formatDuration(duration);
+      els.btn.classList.remove('maxed');
+      const canStart = g.meta.coin >= price && g.labFreeSlots() > 0;
+      els.btn.classList.toggle('disabled', !canStart);
+      els.count.textContent = '研究';
+      els.cost.textContent = formatNumber(price) + '◎';
+    });
+  }
+
+  /** 進行バーの更新（0.5秒間隔） */
+  update(dt) {
+    if (!this.isOpen) return;
+    this.tickTimer += dt;
+    if (this.tickTimer < 0.5) return;
+    this.tickTimer = 0;
+    this.refresh();
+  }
+}
+
+/* =========================================================
+ * 9.57 モジュールパネル（装備・強化・分解）
+ * ======================================================= */
+
+class Modules {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('modules-panel');
+    this.listEl = document.getElementById('modules-list');
+    this.slotsEl = document.getElementById('module-slots');
+    this.shardEl = document.getElementById('val-module-shard');
+    this.activeType = 'all';
+    this.isOpen = false;
+
+    document.getElementById('btn-modules')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-modules-close')
+      .addEventListener('click', () => this.close());
+
+    const tabs = document.querySelectorAll('.module-tab');
+    tabs.forEach((tab) => {
+      tab.addEventListener('click', () => {
+        tabs.forEach((t) => t.classList.remove('active'));
+        tab.classList.add('active');
+        this.activeType = tab.dataset.type;
+        this.build();
+      });
+    });
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.build();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  /** 装備枠の表示 */
+  buildSlots() {
+    const g = this.game;
+    this.slotsEl.textContent = '';
+
+    for (let i = 0; i < MODULE_TYPES.length; i++) {
+      const type = MODULE_TYPES[i];
+      const uid = g.meta.equipped[type.id];
+      const mod = uid ? g.moduleByUid(uid) : null;
+
+      const slot = document.createElement('div');
+      slot.className = 'module-slot' + (mod ? ' filled' : '');
+      slot.style.borderColor = mod
+        ? rarityById(mod.rarity).color
+        : 'rgba(0,229,255,0.2)';
+
+      const label = document.createElement('div');
+      label.className = 'module-slot-label';
+      label.textContent = type.label;
+      label.style.color = type.color;
+
+      const name = document.createElement('div');
+      name.className = 'module-slot-name';
+      if (mod) {
+        const bp = blueprintById(mod.bp);
+        name.textContent = bp ? bp.name : '?';
+        name.style.color = rarityById(mod.rarity).color;
+      } else {
+        name.textContent = '未装備';
+      }
+
+      const lv = document.createElement('div');
+      lv.className = 'module-slot-lv';
+      lv.textContent = mod ? '+' + mod.level : '─';
+
+      slot.appendChild(label);
+      slot.appendChild(name);
+      slot.appendChild(lv);
+      if (mod) slot.addEventListener('click', () => this.onUnequip(type.id));
+      this.slotsEl.appendChild(slot);
+    }
+  }
+
+  onUnequip(typeId) {
+    this.game.sfx.unlock();
+    this.game.unequipModule(typeId);
+    this.game.sfx.deny();
+    this.build();
+  }
+
+  build() {
+    const g = this.game;
+    this.buildSlots();
+    this.shardEl.textContent = formatNumber(g.meta.shards);
+    this.listEl.textContent = '';
+
+    // 装備中を先頭、その後レアリティ降順・レベル降順
+    const list = g.meta.modules.slice().sort((a, b) => {
+      const bpa = blueprintById(a.bp);
+      const bpb = blueprintById(b.bp);
+      const ea = bpa && g.meta.equipped[bpa.type] === a.uid ? 0 : 1;
+      const eb = bpb && g.meta.equipped[bpb.type] === b.uid ? 0 : 1;
+      if (ea !== eb) return ea - eb;
+      const ra = rarityIndex(b.rarity) - rarityIndex(a.rarity);
+      if (ra !== 0) return ra;
+      return b.level - a.level;
+    });
+
+    const filtered = this.activeType === 'all'
+      ? list
+      : list.filter((m) => {
+          const bp = blueprintById(m.bp);
+          return bp && bp.type === this.activeType;
+        });
+
+    if (filtered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'shop-empty';
+      empty.textContent = 'モジュールを所持していません。ガチャで入手できます。';
+      this.listEl.appendChild(empty);
+      return;
+    }
+
+    for (let i = 0; i < filtered.length; i++) {
+      this.listEl.appendChild(this.buildCard(filtered[i]));
+    }
+  }
+
+  buildCard(mod) {
+    const g = this.game;
+    const bp = blueprintById(mod.bp);
+    const rar = rarityById(mod.rarity);
+    const equipped = bp && g.meta.equipped[bp.type] === mod.uid;
+    const power = modulePower(mod.rarity, mod.level);
+
+    const root = document.createElement('div');
+    root.className = 'module-card' + (equipped ? ' equipped' : '');
+    root.style.borderColor = rar.color;
+
+    const head = document.createElement('div');
+    head.className = 'module-head';
+
+    const name = document.createElement('span');
+    name.className = 'module-name';
+    name.textContent = bp ? bp.name : '?';
+    name.style.color = rar.color;
+
+    const rarity = document.createElement('span');
+    rarity.className = 'module-rarity';
+    rarity.textContent = rar.name;
+    rarity.style.color = rar.color;
+
+    const lv = document.createElement('span');
+    lv.className = 'module-lv';
+    lv.textContent = '+' + mod.level + '/' + MODULE_MAX_LEVEL;
+
+    head.appendChild(name);
+    head.appendChild(rarity);
+    head.appendChild(lv);
+
+    const fixed = document.createElement('div');
+    fixed.className = 'module-fixed';
+    fixed.textContent = bp ? bp.fixedText(power) : '';
+
+    root.appendChild(head);
+    root.appendChild(fixed);
+
+    // ランダム能力
+    if (mod.subs.length > 0) {
+      const subs = document.createElement('div');
+      subs.className = 'module-subs';
+      for (let i = 0; i < mod.subs.length; i++) {
+        const def = substatById(mod.subs[i].id);
+        if (!def) continue;
+        const row = document.createElement('div');
+        row.className = 'module-sub';
+        const k = document.createElement('span');
+        k.textContent = def.name;
+        const v = document.createElement('span');
+        v.className = 'module-sub-val';
+        v.textContent = def.format(mod.subs[i].value);
+        row.appendChild(k);
+        row.appendChild(v);
+        subs.appendChild(row);
+      }
+      root.appendChild(subs);
+    }
+
+    // 操作ボタン
+    const actions = document.createElement('div');
+    actions.className = 'module-actions';
+
+    const equipBtn = document.createElement('button');
+    equipBtn.className = 'module-btn';
+    equipBtn.textContent = equipped ? '装備中' : '装備';
+    if (equipped) equipBtn.classList.add('disabled');
+    else equipBtn.addEventListener('click', () => {
+      g.sfx.unlock();
+      g.equipModule(mod);
+      g.sfx.buy();
+      this.build();
+    });
+
+    const upBtn = document.createElement('button');
+    upBtn.className = 'module-btn';
+    if (mod.level >= MODULE_MAX_LEVEL) {
+      upBtn.textContent = 'MAX';
+      upBtn.classList.add('disabled');
+    } else {
+      const cost = moduleUpgradeCost(mod.rarity, mod.level);
+      upBtn.textContent = '強化 ' + cost + '◈';
+      if (g.meta.shards < cost) upBtn.classList.add('disabled');
+      upBtn.addEventListener('click', () => {
+        g.sfx.unlock();
+        if (g.upgradeModule(mod)) g.sfx.research();
+        else g.sfx.deny();
+        this.build();
+      });
+    }
+
+    const scrapBtn = document.createElement('button');
+    scrapBtn.className = 'module-btn danger';
+    scrapBtn.textContent = equipped ? '─' : '分解';
+    if (equipped) scrapBtn.classList.add('disabled');
+    else scrapBtn.addEventListener('click', () => {
+      g.sfx.unlock();
+      const gained = g.dismantleModule(mod);
+      if (gained) {
+        g.showToast('分解して ' + gained + ' シャードを得ました');
+        g.sfx.buy();
+      } else {
+        g.sfx.deny();
+      }
+      this.build();
+    });
+
+    actions.appendChild(equipBtn);
+    actions.appendChild(upBtn);
+    actions.appendChild(scrapBtn);
+    root.appendChild(actions);
+    return root;
+  }
+}
+
+/* =========================================================
+ * 9.58 ガチャパネル（排出演出つき）
+ * ======================================================= */
+
+class Gacha {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('gacha-panel');
+    this.gemEl = document.getElementById('val-gacha-gem');
+    this.resultEl = document.getElementById('gacha-results');
+    this.rateEl = document.getElementById('gacha-rates');
+    this.skinListEl = document.getElementById('gacha-skins');
+    this.isOpen = false;
+    this.revealTimers = [];
+
+    document.getElementById('btn-gacha')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-gacha-close')
+      .addEventListener('click', () => this.close());
+    document.getElementById('btn-gacha-1')
+      .addEventListener('click', () => this.pull(1));
+    document.getElementById('btn-gacha-10')
+      .addEventListener('click', () => this.pull(GACHA_MULTI_COUNT));
+
+    this.buildRates();
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.refresh();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+    this.clearTimers();
+  }
+
+  clearTimers() {
+    for (let i = 0; i < this.revealTimers.length; i++) {
+      clearTimeout(this.revealTimers[i]);
+    }
+    this.revealTimers.length = 0;
+  }
+
+  /** 排出率の表示（RARITIES から自動生成） */
+  buildRates() {
+    let total = 0;
+    for (let i = 0; i < RARITIES.length; i++) total += RARITIES[i].weight;
+
+    this.rateEl.textContent = '';
+    for (let i = 0; i < RARITIES.length; i++) {
+      const r = RARITIES[i];
+      const row = document.createElement('div');
+      row.className = 'gacha-rate-row';
+      const k = document.createElement('span');
+      k.textContent = r.name;
+      k.style.color = r.color;
+      const v = document.createElement('span');
+      v.textContent = ((r.weight / total) * 100).toFixed(2) + '%';
+      row.appendChild(k);
+      row.appendChild(v);
+      this.rateEl.appendChild(row);
+    }
+  }
+
+  refresh() {
+    const g = this.game;
+    this.gemEl.textContent = formatNumber(g.meta.gem);
+    document.getElementById('btn-gacha-1')
+      .classList.toggle('disabled', g.meta.gem < GACHA_SINGLE_COST);
+    document.getElementById('btn-gacha-10')
+      .classList.toggle('disabled', g.meta.gem < GACHA_MULTI_COST);
+    this.buildSkins();
+  }
+
+  /** 所持スキンの一覧と切替 */
+  buildSkins() {
+    const g = this.game;
+    this.skinListEl.textContent = '';
+
+    for (let i = 0; i < SKINS.length; i++) {
+      const sk = SKINS[i];
+      const owned = g.meta.skins.indexOf(sk.id) !== -1;
+      const active = g.meta.activeSkin === sk.id;
+
+      const chip = document.createElement('button');
+      chip.className = 'skin-chip' +
+        (owned ? '' : ' locked') + (active ? ' active' : '');
+      chip.style.borderColor = owned ? sk.core : 'rgba(109,138,163,0.3)';
+
+      const dot = document.createElement('span');
+      dot.className = 'skin-dot';
+      dot.style.background = owned ? sk.core : '#1a2536';
+      dot.style.boxShadow = owned ? '0 0 8px ' + sk.core : 'none';
+
+      const label = document.createElement('span');
+      label.textContent = owned ? sk.name : '???';
+      if (owned) label.style.color = sk.core;
+
+      chip.appendChild(dot);
+      chip.appendChild(label);
+      if (owned) {
+        chip.addEventListener('click', () => {
+          g.sfx.unlock();
+          g.setSkin(sk.id);
+          g.sfx.buy();
+          this.buildSkins();
+        });
+      }
+      this.skinListEl.appendChild(chip);
+    }
+  }
+
+  pull(count) {
+    const g = this.game;
+    g.sfx.unlock();
+
+    const results = g.pullGacha(count);
+    if (!results) {
+      g.sfx.deny();
+      g.showToast('Gem が不足しています');
+      return;
+    }
+
+    this.clearTimers();
+    this.resultEl.textContent = '';
+    this.refresh();
+
+    // 1件ずつ順番に開示して演出をつける
+    for (let i = 0; i < results.length; i++) {
+      const card = this.buildResultCard(results[i]);
+      this.resultEl.appendChild(card);
+      const timer = setTimeout(() => {
+        card.classList.add('revealed');
+        this.onReveal(results[i]);
+      }, 140 * i + 120);
+      this.revealTimers.push(timer);
+    }
+  }
+
+  /** レアリティに応じた演出 */
+  onReveal(result) {
+    const g = this.game;
+    const idx = rarityIndex(result.rarity);
+    const rar = rarityById(result.rarity);
+
+    if (idx >= 3) {
+      // Legend 以上は特別演出
+      g.flashScreen(0.3, rar.color);
+      g.shakeScreen(idx >= 4 ? 12 : 7);
+      g.sfx.gachaRare(idx);
+      if (idx >= 4) {
+        g.showToast(rar.name + ' 排出！  ' + this.resultName(result), 3200);
+      }
+    } else {
+      g.sfx.gachaCommon();
+    }
+  }
+
+  resultName(result) {
+    if (result.kind === 'skin') return result.skin.name;
+    const bp = blueprintById(result.module.bp);
+    return bp ? bp.name : '?';
+  }
+
+  buildResultCard(result) {
+    const rar = rarityById(result.rarity);
+    const card = document.createElement('div');
+    card.className = 'gacha-card rarity-' + result.rarity;
+    card.style.borderColor = rar.color;
+
+    const rarityEl = document.createElement('div');
+    rarityEl.className = 'gacha-card-rarity';
+    rarityEl.textContent = rar.name;
+    rarityEl.style.color = rar.color;
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'gacha-card-name';
+    nameEl.textContent = this.resultName(result);
+    nameEl.style.color = rar.color;
+
+    const subEl = document.createElement('div');
+    subEl.className = 'gacha-card-sub';
+
+    if (result.kind === 'skin') {
+      subEl.textContent = result.duplicate
+        ? '所持済み → ' + result.shards + ' シャード'
+        : 'スキン獲得';
+    } else {
+      const bp = blueprintById(result.module.bp);
+      const type = MODULE_TYPES.find((t) => t.id === bp.type);
+      subEl.textContent = result.overflow
+        ? '所持上限 → ' + result.shards + ' シャード'
+        : (type ? type.label : '') + 'モジュール / 能力' +
+          result.module.subs.length + '個';
+    }
+
+    card.appendChild(rarityEl);
+    card.appendChild(nameEl);
+    card.appendChild(subEl);
+    return card;
+  }
+}
+
+/* =========================================================
+ * 9.6 実績パネル（ACHIEVEMENTS配列から自動生成）
+ * ======================================================= */
+
+class Achievements {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('achievements-panel');
+    this.listEl = document.getElementById('achievements-list');
+    this.progressEl = document.getElementById('achievements-progress');
+    this.isOpen = false;
+
+    document.getElementById('btn-achievements')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-achievements-close')
+      .addEventListener('click', () => this.close());
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.build();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  build() {
+    const g = this.game;
+    this.listEl.textContent = '';
+
+    let done = 0;
+    for (let i = 0; i < ACHIEVEMENTS.length; i++) {
+      if (g.meta.achievements[ACHIEVEMENTS[i].id]) done++;
+    }
+    this.progressEl.textContent = done + ' / ' + ACHIEVEMENTS.length;
+
+    for (let i = 0; i < ACHIEVEMENTS.length; i++) {
+      const a = ACHIEVEMENTS[i];
+      const unlocked = !!g.meta.achievements[a.id];
+
+      const root = document.createElement('div');
+      root.className = 'achievement-item' + (unlocked ? ' unlocked' : '');
+
+      const mark = document.createElement('div');
+      mark.className = 'achievement-mark';
+      mark.textContent = unlocked ? '★' : '☆';
+
+      const info = document.createElement('div');
+      info.className = 'achievement-info';
+
+      const name = document.createElement('div');
+      name.className = 'achievement-name';
+      name.textContent = a.name;
+
+      const desc = document.createElement('div');
+      desc.className = 'achievement-desc';
+      desc.textContent = a.desc;
+
+      info.appendChild(name);
+      info.appendChild(desc);
+
+      const reward = document.createElement('div');
+      reward.className = 'achievement-reward';
+      reward.textContent = a.coin + '◎' + (a.gem > 0 ? ' ' + a.gem + '◆' : '');
+
+      root.appendChild(mark);
+      root.appendChild(info);
+      root.appendChild(reward);
+      this.listEl.appendChild(root);
+    }
+  }
+}
+
+/* =========================================================
+ * 9.7 設定パネル
+ * ======================================================= */
+
+class Settings {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('settings-panel');
+    this.statsEl = document.getElementById('settings-stats');
+    this.isOpen = false;
+    this.resetArmed = false;
+
+    document.getElementById('btn-settings')
+      .addEventListener('click', () => this.toggle());
+    document.getElementById('btn-settings-close')
+      .addEventListener('click', () => this.close());
+
+    this.soundBtn = document.getElementById('btn-toggle-sound');
+    this.soundBtn.addEventListener('click', () => {
+      game.sfx.unlock();
+      const on = !game.sfx.enabled;
+      game.sfx.setEnabled(on);
+      game.meta.soundOn = on;
+      game.requestSave();
+      game.flushSave();
+      this.refresh();
+    });
+
+    this.resetBtn = document.getElementById('btn-reset-save');
+    this.resetBtn.addEventListener('click', () => this.onResetClick());
+
+    // 開始Wave の選択（研究「戦域転送」で解放した範囲内）
+    this.startWaveVal = document.getElementById('start-wave-val');
+    this.startWaveHint = document.getElementById('start-wave-hint');
+    document.getElementById('btn-start-wave-dec')
+      .addEventListener('click', () => this.shiftStartWave(-1));
+    document.getElementById('btn-start-wave-inc')
+      .addEventListener('click', () => this.shiftStartWave(1));
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    this.refresh();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+    this.disarmReset();
+  }
+
+  /** 開始Waveを増減。上限は研究で解放した値 */
+  shiftStartWave(delta) {
+    const g = this.game;
+    const max = Math.max(1, g.player.stats.startWave);
+    const next = Math.max(1, Math.min(g.meta.selectedStartWave + delta, max));
+    if (next === g.meta.selectedStartWave) {
+      g.sfx.deny();
+      return;
+    }
+    g.meta.selectedStartWave = next;
+    g.sfx.buy();
+    g.requestSave();
+    g.flushSave();
+    this.refresh();
+  }
+
+  disarmReset() {
+    this.resetArmed = false;
+    this.resetBtn.textContent = 'セーブデータを初期化';
+    this.resetBtn.classList.remove('danger-armed');
+  }
+
+  /** 誤操作防止のため2段階確認にする */
+  onResetClick() {
+    if (!this.resetArmed) {
+      this.resetArmed = true;
+      this.resetBtn.textContent = '本当に初期化する（取り消し不可）';
+      this.resetBtn.classList.add('danger-armed');
+      return;
+    }
+    const g = this.game;
+    g.saveManager.clear();
+    g.meta = SaveManager.defaultMeta();
+    g.discovered = new Set();
+    g.killsByType = g.meta.codexKills;
+    g.applyMetaToResearch();
+    g.applyMetaToLab();
+    g.player.recalc();
+    g.showToast('セーブデータを初期化しました');
+    this.disarmReset();
+    this.refresh();
+    g.hudDirty = true;
+  }
+
+  refresh() {
+    const g = this.game;
+    const m = g.meta;
+
+    this.soundBtn.textContent = 'サウンド: ' + (g.sfx.enabled ? 'ON' : 'OFF');
+
+    const maxStart = Math.max(1, g.player.stats.startWave);
+    if (g.meta.selectedStartWave > maxStart) g.meta.selectedStartWave = maxStart;
+    this.startWaveVal.textContent = 'Wave ' + g.meta.selectedStartWave;
+    this.startWaveHint.textContent = maxStart > 1
+      ? '研究により Wave ' + maxStart + ' まで解放済み（次の周回から反映）'
+      : '研究「戦域転送」で解放されます';
+
+    const h = Math.floor(m.playTime / 3600);
+    const min = Math.floor((m.playTime % 3600) / 60);
+    const rows = [
+      ['最高到達 Wave', formatNumber(m.bestWave)],
+      ['累計撃破数', formatNumber(m.totalKills)],
+      ['ボス撃破数', formatNumber(m.bossKills)],
+      ['プレイ回数', formatNumber(m.totalRuns)],
+      ['最高所持 Cash', '$' + formatNumber(m.maxCash)],
+      ['プレイ時間', h + '時間 ' + min + '分'],
+      ['保存先', g.saveManager.available ? 'ブラウザに保存中' : '保存不可（一時データ）'],
+    ];
+
+    this.statsEl.textContent = '';
+    for (let i = 0; i < rows.length; i++) {
+      const row = document.createElement('div');
+      row.className = 'settings-row';
+      const k = document.createElement('span');
+      k.className = 'settings-key';
+      k.textContent = rows[i][0];
+      const v = document.createElement('span');
+      v.className = 'settings-val';
+      v.textContent = rows[i][1];
+      row.appendChild(k);
+      row.appendChild(v);
+      this.statsEl.appendChild(row);
+    }
+  }
+}
+
+/* =========================================================
  * 10. ゲーム本体
  * ======================================================= */
 
@@ -1735,14 +4049,23 @@ class Game {
     this.shockwavePool = new Pool(() => new Shockwave(), 24);
     this.packagePool = new Pool(() => new Package(), 16);
 
-    // 通貨・記録
+    // ---- 永続データの復元 ----
+    this.saveManager = new SaveManager();
+    this.meta = this.saveManager.load();
+    this.saveDirty = false;
+    this.autoSaveTimer = 0;
+    this.applyMetaToResearch();
+    this.applyMetaToLab();
+
+    // 図鑑・実績は永続データを参照する
+    this.discovered = new Set(this.meta.discovered);
+    this.killsByType = this.meta.codexKills;
+
+    // 通貨・周回内の記録
     this.cash = 0;
-    this.coin = 0;
     this.coinFrac = 0;
-    this.gem = 0;
-    this.totalKills = 0;
-    this.killsByType = Object.create(null);
-    this.discovered = new Set();
+    this.runKills = 0;
+    this.runBossKills = 0;
 
     this.dpsAccum = 0;
     this.dpsTimer = 0;
@@ -1773,7 +4096,39 @@ class Game {
     this.hud = this.cacheHudElements();
     this.shop = new Shop(this);
     this.codex = new Codex(this);
+    this.research = new Research(this);
+    this.lab = new Lab(this);
+    this.modules = new Modules(this);
+    this.gacha = new Gacha(this);
+    this.achievements = new Achievements(this);
+    this.settings = new Settings(this);
+    this.panelList = [
+      this.shop, this.codex, this.research, this.lab,
+      this.modules, this.gacha, this.achievements, this.settings,
+    ];
     this.bindEvents();
+
+    // 保存されていたサウンド設定・ゲームスピードを復元
+    this.sfx.setEnabled(this.meta.soundOn !== false);
+    this.gameSpeed = GAME_SPEEDS.indexOf(this.meta.gameSpeed) >= 0
+      ? this.meta.gameSpeed
+      : 1;
+    this.hud.speedVal.textContent = '×' + this.gameSpeed;
+
+    // 既に到達済みのTierは演出なしで解放済みにしておく
+    for (let i = 0; i < UPGRADE_TIERS.length; i++) {
+      const t = UPGRADE_TIERS[i];
+      if (this.meta.bestWave >= t.requiredWave) this.meta.unlockedTiers[t.tier] = true;
+    }
+    this.shop.buildList();
+
+    // 閉じている間に完了した研究を回収してから報酬を計算する。
+    // 回収処理がセーブを走らせるので、離脱時刻は先に控えておく。
+    const lastExitAtBoot = this.meta.lastExit;
+    this.offlineLabDone = this.processLabJobs(true);
+
+    // オフライン報酬の判定（完了した研究の効果も反映された状態で計算する）
+    this.pendingOffline = this.calcOfflineReward(lastExitAtBoot);
     this.resize();
     this.renderFrame();
 
@@ -1805,8 +4160,14 @@ class Game {
       dps: $('val-dps'),
       fps: $('fps'),
       toast: $('toast'),
-      soundBtn: $('btn-sound'),
-      soundIcon: $('sound-icon'),
+      speedBtn: $('btn-speed'),
+      speedVal: $('val-speed'),
+      offlineOverlay: $('overlay-offline'),
+      offlineTime: $('offline-time'),
+      offlineCash: $('offline-cash'),
+      offlineCoin: $('offline-coin'),
+      offlineGem: $('offline-gem'),
+      offlineGemRow: $('offline-gem-row'),
       overlayStart: $('overlay-start'),
       overlayGameOver: $('overlay-gameover'),
       goWave: $('go-wave'),
@@ -1822,13 +4183,12 @@ class Game {
     document.getElementById('btn-restart')
       .addEventListener('click', () => { this.sfx.unlock(); this.restart(); });
 
-    this.hud.soundBtn.addEventListener('click', () => {
-      this.sfx.unlock();
-      const on = !this.sfx.enabled;
-      this.sfx.setEnabled(on);
-      this.hud.soundIcon.textContent = on ? '♪' : '✕';
-      this.hud.soundBtn.classList.toggle('muted', !on);
-    });
+    this.hud.speedBtn.addEventListener('click', () => this.cycleGameSpeed());
+
+    document.getElementById('btn-offline-close')
+      .addEventListener('click', () => {
+        this.hud.offlineOverlay.classList.add('hidden');
+      });
 
     document.querySelectorAll('.menu-btn-locked').forEach((btn) => {
       btn.addEventListener('click', () => this.showToast(btn.dataset.locked));
@@ -1836,14 +4196,561 @@ class Game {
 
     // タブ非アクティブ時はBGMを止めて負荷を下げる
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden) this.sfx.stopBgm();
-      else if (this.running) this.sfx.startBgm();
+      if (document.hidden) {
+        this.sfx.stopBgm();
+        this.flushSave();   // タブを離れる際に取りこぼさず保存
+      } else if (this.running) {
+        this.sfx.startBgm();
+      }
     });
+    window.addEventListener('pagehide', () => this.flushSave());
+  }
+
+  /** 指定パネル以外を閉じる */
+  closePanels(except) {
+    if (!this.panelList) return;
+    for (let i = 0; i < this.panelList.length; i++) {
+      const p = this.panelList[i];
+      if (p !== except) p.close();
+    }
+  }
+
+  /* ---------- モジュール ---------- */
+
+  moduleByUid(uid) {
+    const list = this.meta.modules;
+    for (let i = 0; i < list.length; i++) {
+      if (list[i].uid === uid) return list[i];
+    }
+    return null;
+  }
+
+  /** 装備中モジュールの配列（未装備の枠は含めない） */
+  equippedModules() {
+    if (!this.meta || !this.meta.equipped) return null;
+    const out = [];
+    for (let i = 0; i < MODULE_TYPES.length; i++) {
+      const uid = this.meta.equipped[MODULE_TYPES[i].id];
+      if (!uid) continue;
+      const m = this.moduleByUid(uid);
+      if (m) out.push(m);
+    }
+    return out;
+  }
+
+  equipModule(mod) {
+    const bp = blueprintById(mod.bp);
+    if (!bp) return false;
+    this.meta.equipped[bp.type] = mod.uid;
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.checkAchievements();
+    this.hudDirty = true;
+    return true;
+  }
+
+  unequipModule(typeId) {
+    delete this.meta.equipped[typeId];
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+  }
+
+  /** モジュールを分解してシャードにする */
+  dismantleModule(mod) {
+    const bp = blueprintById(mod.bp);
+    if (bp && this.meta.equipped[bp.type] === mod.uid) return false;
+
+    const idx = this.meta.modules.indexOf(mod);
+    if (idx === -1) return false;
+    this.meta.modules.splice(idx, 1);
+
+    // レベルに投入したぶんの一部も戻す
+    let refund = moduleShardValue(mod.rarity);
+    for (let l = 0; l < mod.level; l++) {
+      refund += Math.floor(moduleUpgradeCost(mod.rarity, l) * 0.5);
+    }
+    this.meta.shards += refund;
+    this.requestSave();
+    this.flushSave();
+    return refund;
+  }
+
+  /** シャードを消費してモジュールを強化する */
+  upgradeModule(mod) {
+    if (mod.level >= MODULE_MAX_LEVEL) return false;
+    const cost = moduleUpgradeCost(mod.rarity, mod.level);
+    if (this.meta.shards < cost) return false;
+
+    this.meta.shards -= cost;
+    mod.level++;
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.checkAchievements();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /* ---------- ガチャ ---------- */
+
+  /**
+   * ガチャを1回分抽選する。minRarityIndex を指定するとその下限を保証する。
+   * 戻り値は表示用の結果オブジェクト。
+   */
+  rollGachaOnce(minRarityIndex) {
+    const kind = weightedPick(GACHA_KINDS).kind;
+    const rarity = rollRarity(minRarityIndex);
+
+    if (kind === 'skin') {
+      // そのレアリティのスキンを引く。所持済みならシャードへ変換
+      const candidates = SKINS.filter((sk) => sk.rarity === rarity.id);
+      if (candidates.length > 0) {
+        const sk = candidates[Math.floor(Math.random() * candidates.length)];
+        if (this.meta.skins.indexOf(sk.id) === -1) {
+          this.meta.skins.push(sk.id);
+          return { kind: 'skin', rarity: rarity.id, skin: sk, duplicate: false };
+        }
+        const shards = moduleShardValue(rarity.id);
+        this.meta.shards += shards;
+        return { kind: 'skin', rarity: rarity.id, skin: sk, duplicate: true, shards };
+      }
+    }
+
+    // モジュール
+    const bp = MODULE_BLUEPRINTS[
+      Math.floor(Math.random() * MODULE_BLUEPRINTS.length)
+    ];
+    const mod = createModule(bp, rarity.id);
+
+    // 所持上限に達している場合はシャードへ自動変換する
+    if (this.meta.modules.length >= MODULE_INVENTORY_MAX) {
+      const shards = moduleShardValue(rarity.id);
+      this.meta.shards += shards;
+      return {
+        kind: 'module', rarity: rarity.id, module: mod, blueprint: bp,
+        overflow: true, shards,
+      };
+    }
+
+    this.meta.modules.push(mod);
+    return { kind: 'module', rarity: rarity.id, module: mod, blueprint: bp };
+  }
+
+  /** ガチャを引く。count は 1 か GACHA_MULTI_COUNT */
+  pullGacha(count) {
+    const cost = count === 1 ? GACHA_SINGLE_COST : GACHA_MULTI_COST;
+    if (this.meta.gem < cost) return null;
+
+    this.meta.gem -= cost;
+    const results = [];
+    for (let i = 0; i < count; i++) {
+      // 10連は最後の1枠が Rare 以上確定
+      const guarantee = count > 1 && i === count - 1 ? 1 : 0;
+      results.push(this.rollGachaOnce(guarantee));
+    }
+    this.meta.gachaPulls += count;
+
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    this.checkAchievements();
+    return results;
+  }
+
+  /* ---------- スキン ---------- */
+
+  setSkin(id) {
+    if (this.meta.skins.indexOf(id) === -1) return false;
+    this.meta.activeSkin = id;
+    this.requestSave();
+    this.flushSave();
+    return true;
+  }
+
+  activeSkin() {
+    return skinById(this.meta.activeSkin);
+  }
+
+  /* ---------- LAB（実時間研究） ---------- */
+
+  /** セーブデータのレベルを LAB_RESEARCH 配列へ反映 */
+  applyMetaToLab() {
+    for (let i = 0; i < LAB_RESEARCH.length; i++) {
+      const r = LAB_RESEARCH[i];
+      const saved = this.meta.labLevels[r.id];
+      r.level = typeof saved === 'number'
+        ? Math.max(0, Math.min(saved, r.maxLevel))
+        : 0;
+    }
+  }
+
+  syncLabToMeta() {
+    for (let i = 0; i < LAB_RESEARCH.length; i++) {
+      const r = LAB_RESEARCH[i];
+      this.meta.labLevels[r.id] = r.level;
+    }
+  }
+
+  labById(id) {
+    for (let i = 0; i < LAB_RESEARCH.length; i++) {
+      if (LAB_RESEARCH[i].id === id) return LAB_RESEARCH[i];
+    }
+    return null;
+  }
+
+  /** 指定研究が進行中ならジョブを返す */
+  labJobOf(id) {
+    const jobs = this.meta.labJobs;
+    for (let i = 0; i < jobs.length; i++) {
+      if (jobs[i].id === id) return jobs[i];
+    }
+    return null;
+  }
+
+  /**
+   * 完了時刻を過ぎたジョブを回収する。
+   * 起動時にも呼ばれるため、ゲームを閉じている間の進行もここで反映される。
+   * 戻り値は完了した研究の配列。
+   */
+  processLabJobs(silent) {
+    const now = Date.now();
+    const jobs = this.meta.labJobs;
+    const done = [];
+
+    for (let i = jobs.length - 1; i >= 0; i--) {
+      if (jobs[i].endsAt > now) continue;
+      const job = jobs.splice(i, 1)[0];
+      const r = this.labById(job.id);
+      if (!r) continue;
+      // 保存されたレベルより低い完了は無視（多重適用の防止）
+      if (r.level >= job.level) continue;
+      r.level = job.level;
+      done.push(r);
+    }
+
+    if (done.length === 0) return done;
+
+    this.syncLabToMeta();
+    this.player.recalc();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+
+    if (!silent) {
+      const names = done.map((r) => r.name + ' Lv' + r.level).join(' / ');
+      this.showToast('研究完了: ' + names, 3200);
+      this.sfx.research();
+      this.flashScreen(0.18, '#a561ff');
+    }
+    if (this.lab && this.lab.isOpen) this.lab.build();
+    return done;
+  }
+
+  /** 空きスロットがあるか */
+  labFreeSlots() {
+    return this.meta.labSlots - this.meta.labJobs.length;
+  }
+
+  /** 研究に着手する。成功で true */
+  startLabJob(r) {
+    if (r.level >= r.maxLevel) return false;
+    if (!this.isUnlocked(r)) return false;
+    if (this.labJobOf(r.id)) return false;
+    if (this.labFreeSlots() <= 0) return false;
+
+    const cost = labCostAt(r, r.level);
+    if (this.meta.coin < cost) return false;
+
+    this.meta.coin -= cost;
+    const duration = labDurationAt(r, r.level);
+    this.meta.labJobs.push({
+      id: r.id,
+      level: r.level + 1,
+      endsAt: Date.now() + duration * 1000,
+    });
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /** Gemを支払って研究を即時完了させる */
+  rushLabJob(job) {
+    const remaining = Math.max(0, (job.endsAt - Date.now()) / 1000);
+    const cost = labSpeedupGemCost(remaining);
+    if (this.meta.gem < cost) return false;
+
+    this.meta.gem -= cost;
+    job.endsAt = Date.now();
+    this.processLabJobs(false);
+    return true;
+  }
+
+  /** Gemで研究スロットを増やす */
+  buyLabSlot() {
+    const next = this.meta.labSlots;
+    if (next >= LAB_SLOT_COSTS.length) return false;
+    const cost = LAB_SLOT_COSTS[next];
+    if (this.meta.gem < cost) return false;
+
+    this.meta.gem -= cost;
+    this.meta.labSlots++;
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return true;
+  }
+
+  /* ---------- Gem 獲得 ---------- */
+
+  /** 高Wave到達の節目でGemを支払う */
+  checkGemMilestones() {
+    let total = 0;
+    for (let i = 0; i < GEM_MILESTONES.length; i++) {
+      const m = GEM_MILESTONES[i];
+      if (this.meta.bestWave < m.wave) continue;
+      if (this.meta.gemMilestones[m.wave]) continue;
+      this.meta.gemMilestones[m.wave] = true;
+      total += m.gem;
+    }
+    if (total <= 0) return;
+
+    const amount = Math.floor(total * this.player.stats.gemFindMul);
+    this.meta.gem += amount;
+    this.showToast('到達報酬  +' + amount + ' ◆', 3000);
+    this.sfx.achievement();
+    this.flashScreen(0.2, '#ff2d95');
+    this.requestSave();
+    this.hudDirty = true;
+  }
+
+  /** 広告視聴（ダミー実装）でGemを得る。1日3回まで */
+  watchAd() {
+    const today = new Date().toDateString();
+    if (this.meta.adDate !== today) {
+      this.meta.adDate = today;
+      this.meta.adCount = 0;
+    }
+    if (this.meta.adCount >= 3) return 0;
+
+    this.meta.adCount++;
+    const amount = Math.floor(5 * this.player.stats.gemFindMul);
+    this.meta.gem += amount;
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+    return amount;
+  }
+
+  adRemainingToday() {
+    const today = new Date().toDateString();
+    if (this.meta.adDate !== today) return 3;
+    return Math.max(0, 3 - this.meta.adCount);
+  }
+
+  /* ---------- アップグレード解放 ---------- */
+
+  /** 到達Waveに応じて新しいTierを解放し、初回のみ演出を出す */
+  checkTierUnlocks() {
+    const best = this.meta.bestWave;
+    let newest = null;
+
+    for (let i = 0; i < UPGRADE_TIERS.length; i++) {
+      const t = UPGRADE_TIERS[i];
+      if (best < t.requiredWave) continue;
+      if (this.meta.unlockedTiers[t.tier]) continue;
+      this.meta.unlockedTiers[t.tier] = true;
+      if (t.requiredWave > 0) newest = t;
+    }
+
+    if (!newest) return;
+
+    // 解放演出: 効果音・画面フラッシュ・通知・ショップ側の点滅
+    this.sfx.unlockTier();
+    this.flashScreen(0.3, '#ffc233');
+    this.shakeScreen(6);
+    const nUp = UPGRADES.filter((u) => u.tier === newest.tier).length;
+    const nRe = RESEARCH.filter((r) => r.tier === newest.tier).length;
+    const nLab = LAB_RESEARCH.filter((r) => r.tier === newest.tier).length;
+    const parts = [];
+    if (nUp > 0) parts.push('強化' + nUp + '種');
+    if (nRe > 0) parts.push('研究' + nRe + '種');
+    if (nLab > 0) parts.push('LAB' + nLab + '種');
+    this.showToast(
+      'TIER ' + newest.tier + ' 解放！  ' + parts.join(' / '), 3200
+    );
+    this.shop.markTierUnlocked(newest.tier);
+    if (this.research.isOpen) this.research.build();
+    if (this.lab.isOpen) this.lab.build();
+    this.requestSave();
+  }
+
+  /** 指定アップグレードが解放済みか */
+  isUnlocked(u) {
+    return isTierUnlocked(u.tier, this.meta.bestWave);
+  }
+
+  /* ---------- ゲームスピード ---------- */
+
+  setGameSpeed(mul) {
+    this.gameSpeed = mul;
+    this.meta.gameSpeed = mul;
+    this.hud.speedVal.textContent = '×' + mul;
+    this.requestSave();
+  }
+
+  cycleGameSpeed() {
+    const idx = GAME_SPEEDS.indexOf(this.gameSpeed);
+    this.setGameSpeed(GAME_SPEEDS[(idx + 1) % GAME_SPEEDS.length]);
+    this.sfx.unlock();
+    this.sfx.buy();
+  }
+
+  /* ---------- オフライン報酬 ---------- */
+
+  /**
+   * 前回終了からの経過時間に応じた報酬を計算する。
+   * 到達Waveが高いほど効率が上がる。上限は OFFLINE_MAX_HOURS。
+   */
+  calcOfflineReward(since) {
+    // 起動時は processLabJobs のセーブで meta.lastExit が現在時刻へ
+    // 更新されてしまうため、読み込み直後に控えた値を引数で受け取る。
+    const last = since === undefined ? this.meta.lastExit : since;
+    if (!last) return null;
+
+    const elapsedMs = Date.now() - last;
+    const minutes = elapsedMs / 60000;
+    if (minutes < CONFIG.OFFLINE_MIN_MINUTES) return null;
+
+    const capped = Math.min(minutes, CONFIG.OFFLINE_MAX_HOURS * 60);
+    const wave = Math.max(this.meta.bestWave, 1);
+
+    // LAB「自律運転」で効率が上がる
+    const mul = this.player.stats.offlineMul;
+
+    return {
+      minutes: capped,
+      cash: Math.floor(capped * (12 + wave * 2.5) * mul),
+      coin: Math.floor(capped * (0.05 + wave * 0.004) * mul),
+      gem: Math.floor(capped / 120) * (wave >= 50 ? 1 : 0),
+    };
+  }
+
+  grantOfflineReward(r) {
+    this.meta.pendingCash += r.cash;
+    this.meta.coin += r.coin;
+    this.meta.gem += r.gem;
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+  }
+
+  /* ---------- 永続データ ---------- */
+
+  /** セーブデータの研究レベルを RESEARCH 配列へ反映 */
+  applyMetaToResearch() {
+    for (let i = 0; i < RESEARCH.length; i++) {
+      const r = RESEARCH[i];
+      const saved = this.meta.research[r.id];
+      r.level = typeof saved === 'number'
+        ? Math.max(0, Math.min(saved, r.maxLevel))
+        : 0;
+    }
+  }
+
+  /** RESEARCH 配列の状態を meta へ書き戻す */
+  syncResearchToMeta() {
+    for (let i = 0; i < RESEARCH.length; i++) {
+      const r = RESEARCH[i];
+      this.meta.research[r.id] = r.level;
+    }
+  }
+
+  requestSave() { this.saveDirty = true; }
+
+  flushSave() {
+    if (!this.saveDirty) return;
+    this.saveDirty = false;
+    this.meta.lastExit = Date.now();
+    this.meta.discovered = [...this.discovered];
+    this.syncResearchToMeta();
+    this.syncLabToMeta();
+    this.saveManager.save(this.meta);
+  }
+
+  /** 実績判定に渡す統計スナップショット */
+  buildAchievementContext() {
+    const m = this.meta;
+    return {
+      totalKills: m.totalKills,
+      bossKills: m.bossKills,
+      bestWave: m.bestWave,
+      bestWaveWithWall: m.bestWaveWithWall,
+      maxCash: m.maxCash,
+      totalRuns: m.totalRuns,
+      discoveredCount: this.discovered.size,
+      upgradeLevels: totalLevels(UPGRADES),
+      researchLevels: totalLevels(RESEARCH),
+      gachaPulls: m.gachaPulls || 0,
+      equippedCount: Object.keys(m.equipped || {}).length,
+      bestModuleRarity: this.bestModuleStat('rarity'),
+      bestModuleLevel: this.bestModuleStat('level'),
+    };
+  }
+
+  /** 所持モジュールの最高レアリティ／最高レベルを返す */
+  bestModuleStat(kind) {
+    const list = this.meta.modules || [];
+    let best = 0;
+    for (let i = 0; i < list.length; i++) {
+      const v = kind === 'rarity'
+        ? rarityIndex(list[i].rarity)
+        : list[i].level;
+      if (v > best) best = v;
+    }
+    return best;
+  }
+
+  /** 未解除の実績を判定し、達成していれば報酬を支払う */
+  checkAchievements() {
+    const ctx = this.buildAchievementContext();
+    let unlocked = false;
+
+    for (let i = 0; i < ACHIEVEMENTS.length; i++) {
+      const a = ACHIEVEMENTS[i];
+      if (this.meta.achievements[a.id]) continue;
+      if (!a.check(ctx)) continue;
+
+      this.meta.achievements[a.id] = true;
+      this.meta.coin += a.coin;
+      this.meta.gem += a.gem;
+      unlocked = true;
+
+      const reward = a.coin + '◎' + (a.gem > 0 ? ' / ' + a.gem + '◆' : '');
+      this.showToast('実績解除: ' + a.name + '  +' + reward);
+      this.sfx.achievement();
+    }
+
+    if (unlocked) {
+      this.requestSave();
+      this.hudDirty = true;
+      if (this.achievements && this.achievements.isOpen) this.achievements.build();
+    }
   }
 
   /* ---------- 通貨 ---------- */
 
-  addCash(amount) { this.cash += amount; }
+  addCash(amount) {
+    this.cash += amount;
+    if (this.cash > this.meta.maxCash) {
+      this.meta.maxCash = this.cash;
+      this.saveDirty = true;
+    }
+  }
 
   spendCash(amount) {
     this.cash -= amount;
@@ -1854,12 +4761,18 @@ class Game {
   }
 
   addCoin(amount) {
-    this.coinFrac += amount;
+    this.coinFrac += amount * this.player.stats.coinBonus;
     if (this.coinFrac >= 1) {
       const whole = Math.floor(this.coinFrac);
-      this.coin += whole;
+      this.meta.coin += whole;
       this.coinFrac -= whole;
+      this.saveDirty = true;
     }
+  }
+
+  addGem(amount) {
+    this.meta.gem += amount;
+    this.saveDirty = true;
   }
 
   /* ---------- 画面サイズ・背景 ---------- */
@@ -1933,13 +4846,59 @@ class Game {
 
   /* ---------- ゲーム進行 ---------- */
 
-  start() {
-    this.hud.overlayStart.classList.add('hidden');
+  /** 周回開始時の共通処理（研究の初期資金・開始Waveを適用） */
+  beginRun() {
+    const s = this.player.stats;
+    this.cash = s.startingCash + this.meta.pendingCash;
+    this.meta.pendingCash = 0;
+    this.runKills = 0;
+    this.runBossKills = 0;
+    this.coinFrac = 0;
+
+    // 開始Waveは「戦域転送」で解放した上限内で、設定から選んだ値を使う
+    const startWave = Math.max(1, Math.min(this.meta.selectedStartWave, s.startWave));
+    this.waveManager.wave = startWave - 1;
+
+    this.meta.totalRuns++;
+    this.requestSave();
+
     this.running = true;
     this.lastTime = performance.now();
     this.waveManager.startNextWave();
     this.sfx.startBgm();
+    this.checkAchievements();
     requestAnimationFrame(this._loop);
+  }
+
+  start() {
+    this.hud.overlayStart.classList.add('hidden');
+
+    // オフライン報酬があれば受け取り画面を表示する
+    const r = this.pendingOffline;
+    if (r) {
+      this.pendingOffline = null;
+      this.grantOfflineReward(r);
+      const h = Math.floor(r.minutes / 60);
+      const m = Math.floor(r.minutes % 60);
+      this.hud.offlineTime.textContent =
+        (h > 0 ? h + '時間 ' : '') + m + '分';
+      this.hud.offlineCash.textContent = '$' + formatNumber(r.cash);
+      this.hud.offlineCoin.textContent = formatNumber(r.coin) + ' ◎';
+      this.hud.offlineGem.textContent = formatNumber(r.gem) + ' ◆';
+      this.hud.offlineGemRow.style.display = r.gem > 0 ? '' : 'none';
+      this.hud.offlineOverlay.classList.remove('hidden');
+      this.sfx.package_();
+    }
+
+    // 不在中に完了した研究があれば知らせる
+    const labDone = this.offlineLabDone;
+    if (labDone && labDone.length > 0) {
+      this.offlineLabDone = null;
+      const names = labDone.map((r) => r.name + ' Lv' + r.level).join(' / ');
+      setTimeout(() => this.showToast('研究完了: ' + names, 3600), 900);
+    }
+
+    this.beginRun();
   }
 
   restart() {
@@ -1952,8 +4911,6 @@ class Game {
     this.releaseAll(this.shockwaves, this.shockwavePool);
     this.releaseAll(this.packages, this.packagePool);
 
-    this.cash = 0;
-    this.totalKills = 0;
     this.dps = 0;
     this.dpsAccum = 0;
     this.shake = 0;
@@ -1971,12 +4928,8 @@ class Game {
     this.shop.refresh(true);
 
     this.hud.overlayGameOver.classList.add('hidden');
-    this.running = true;
-    this.lastTime = performance.now();
-    this.waveManager.startNextWave();
     this.sfx.setBgmIntensity(false);
-    this.sfx.startBgm();
-    requestAnimationFrame(this._loop);
+    this.beginRun();
   }
 
   releaseAll(arr, pool) {
@@ -1986,18 +4939,26 @@ class Game {
 
   gameOver() {
     this.running = false;
-    this.shop.close();
-    this.codex.close();
+    this.closePanels(null);
     this.sfx.gameOver();
     this.flashScreen(0.4, '#ff3b5c');
     this.shakeScreen(CONFIG.SHAKE_MAX);
 
     const earned = Math.floor(
-      this.waveManager.wave * 1.5 + this.totalKills * 0.1
+      this.waveManager.wave * 1.5 + this.runKills * 0.1
     );
-    this.coin += earned;
+    this.addCoin(earned);
+
+    // 周回の記録を永続データへ反映
+    if (this.waveManager.wave > this.meta.bestWave) {
+      this.meta.bestWave = this.waveManager.wave;
+    }
+    this.requestSave();
+    this.checkAchievements();
+    this.flushSave();
+
     this.hud.goWave.textContent = this.waveManager.wave;
-    this.hud.goKills.textContent = formatNumber(this.totalKills);
+    this.hud.goKills.textContent = formatNumber(this.runKills);
     this.hud.goCoin.textContent = formatNumber(earned);
     this.hud.overlayGameOver.classList.remove('hidden');
   }
@@ -2034,6 +4995,18 @@ class Game {
     this.spawnShockwave(boss.x, boss.y, 220, '#ff2d95');
     this.spawnParticles(boss.x, boss.y, 40, 320, 0.8, 5, boss.type.color);
 
+    this.runBossKills++;
+    this.meta.bossKills++;
+
+    // 「結晶探知」の抽選でGemを獲得
+    if (Math.random() < this.player.stats.gemChance) {
+      const amount = Math.max(1, Math.floor(this.player.stats.gemFindMul));
+      this.addGem(amount);
+      this.showToast('Gem を獲得しました  +' + amount + '◆');
+    }
+    this.requestSave();
+    this.checkAchievements();
+
     // Boss Package: ボス撃破時の補給
     const n = this.player.stats.bossPackage;
     for (let i = 0; i < n; i++) this.spawnPackage(boss.x, boss.y, boss.cash * 0.2);
@@ -2053,6 +5026,29 @@ class Game {
     }
     if (bonusCash > 0) this.addCash(Math.floor(bonusCash));
     if (s.coinPerWave > 0) this.addCoin(s.coinPerWave);
+
+    // Wave Skip: 次のWaveを戦わずに報酬だけ受け取る
+    if (s.waveSkipChance > 0 && Math.random() < s.waveSkipChance) {
+      this.waveManager.wave++;
+      const skipped = this.waveManager.wave;
+      const reward = Math.floor(
+        (20 + skipped * 8) * WAVE_RULES.cashMul(skipped) * s.cashBonus
+      );
+      this.addCash(reward);
+      this.showToast('WAVE ' + skipped + ' をスキップ  +$' + formatNumber(reward));
+      this.flashScreen(0.14, '#3dff9e');
+      this.sfx.package_();
+    }
+
+    if (wave > this.meta.bestWave) this.meta.bestWave = wave;
+    if (this.player.maxWallHp > 0 && this.player.wallHp > 0 &&
+        wave > this.meta.bestWaveWithWall) {
+      this.meta.bestWaveWithWall = wave;
+    }
+    this.requestSave();
+    this.checkAchievements();
+    this.checkTierUnlocks();
+    this.checkGemMilestones();
 
     this.sfx.waveClear();
   }
@@ -2076,10 +5072,27 @@ class Game {
       dt *= CONFIG.HITSTOP_SCALE;
     }
 
-    this.update(dt);
+    // ゲームスピード倍率。1フレームでまとめて進めると当たり判定が
+    // 抜けるため、MAX_DT 以下のサブステップに分割して更新する。
+    let remaining = dt * this.gameSpeed;
+    let guard = 0;
+    while (remaining > 0 && guard < 16) {
+      const step = Math.min(remaining, CONFIG.MAX_SUBSTEP);
+      this.update(step);
+      remaining -= step;
+      guard++;
+    }
     this.renderFrame();
     this.updateHud(realDt);
     this.updateFps(realDt);
+
+    // 5秒間隔のオートセーブ（変更があった場合のみ書き込む）
+    this.meta.playTime += realDt;
+    this.autoSaveTimer += realDt;
+    if (this.autoSaveTimer >= 5) {
+      this.autoSaveTimer = 0;
+      this.flushSave();
+    }
 
     requestAnimationFrame(this._loop);
   }
@@ -2097,6 +5110,14 @@ class Game {
     this.updateParticles(dt);
     this.updateDamageNumbers(dt);
     this.shop.update(dt);
+    this.lab.update(dt);
+
+    // 研究の完了判定（1秒間隔で十分なので負荷は無視できる）
+    this.labCheckTimer = (this.labCheckTimer || 0) + dt;
+    if (this.labCheckTimer >= 1) {
+      this.labCheckTimer = 0;
+      if (this.meta.labJobs.length > 0) this.processLabJobs(false);
+    }
 
     this.dpsTimer += dt;
     if (this.dpsTimer >= 1) {
@@ -2242,6 +5263,13 @@ class Game {
       this.sfx.hit();
     }
 
+    // ---- Critical Chain: クリティカル時の追撃 ----
+    if (projectile.critTier > 0 && s.critChainChance > 0 &&
+        Math.random() < s.critChainChance) {
+      const extra = this.findBounceTarget(projectile, null);
+      if (extra) this.player.fireAt(extra);
+    }
+
     // ---- 跳弾 ----
     if (projectile.bouncesLeft > 0) {
       const next = this.findBounceTarget(projectile, enemy);
@@ -2257,7 +5285,10 @@ class Game {
   }
 
   findBounceTarget(projectile, exclude) {
-    const rSq = projectile.bounceRange * projectile.bounceRange;
+    const range = projectile.bounceRange > 0
+      ? projectile.bounceRange
+      : this.player.stats.range;
+    const rSq = range * range;
     let best = null;
     let bestSq = Infinity;
     for (let i = 0; i < this.enemies.length; i++) {
@@ -2276,7 +5307,8 @@ class Game {
    * showNumber=false のDoT等はダメージ数字を出さず描画負荷を抑える。
    */
   damageEnemy(enemy, amount, critTier, showNumber) {
-    const dmg = amount * enemy.dmgTakenMul;
+    let dmg = amount * enemy.dmgTakenMul;
+    if (enemy.isBoss) dmg *= this.player.stats.bossDamageMul;
     enemy.hp -= dmg;
     enemy.hitFlash = 0.08;
     this.dpsAccum += dmg;
@@ -2285,6 +5317,19 @@ class Game {
       const d = this.damageNumberPool.acquire();
       d.init(enemy.x, enemy.y - enemy.size, dmg, critTier || 0);
       this.damageNumbers.push(d);
+    }
+
+    // Lifesteal: 与ダメージの一部をHPへ還元
+    const steal = this.player.stats.lifesteal;
+    if (steal > 0 && this.player.hp < this.player.stats.maxHp) {
+      this.player.heal(dmg * steal);
+    }
+
+    // Execution: 瀕死の敵を即撃破（ボスは対象外）
+    const th = this.player.stats.executeThreshold;
+    if (enemy.hp > 0 && th > 0 && !enemy.isBoss && enemy.hp / enemy.maxHp <= th) {
+      enemy.hp = 0;
+      this.spawnParticles(enemy.x, enemy.y, 8, 200, 0.3, 3, '#ffffff');
     }
 
     if (enemy.hp <= 0) this.killEnemy(enemy);
@@ -2298,7 +5343,8 @@ class Game {
     this.addCash(Math.ceil(enemy.cash * s.cashBonus));
     if (enemy.coin > 0) this.addCoin(enemy.coin);
     if (s.coinPerKill > 0) this.addCoin(s.coinPerKill);
-    this.totalKills++;
+    this.runKills++;
+    this.meta.totalKills++;
     this.waveManager.killed++;
 
     const tid = enemy.type.id;
@@ -2320,6 +5366,8 @@ class Game {
   discoverEnemy(id) {
     if (!this.discovered.has(id)) {
       this.discovered.add(id);
+      this.requestSave();
+      this.checkAchievements();
       const t = ENEMY_TYPES.find((x) => x.id === id);
       if (t && !t.boss) this.showToast('新種を確認: ' + t.name);
     }
@@ -2338,11 +5386,18 @@ class Game {
 
     const baseAngle = this.player.orbAngle;
     const dmg = s.orbDamage * dt * 4; // 接触中は継続ダメージ
+    const rings = s.orbRings;
+    const total = n * rings;
 
-    for (let o = 0; o < n; o++) {
-      const a = baseAngle + (o / n) * TAU;
-      const ox = this.cx + Math.cos(a) * CONFIG.ORB_RADIUS;
-      const oy = this.cy + Math.sin(a) * CONFIG.ORB_RADIUS;
+    for (let k = 0; k < total; k++) {
+      const ring = Math.floor(k / n);
+      const o = k % n;
+      // リングごとに半径・回転方向を変えて視認性を上げる
+      const dir = ring % 2 === 0 ? 1 : -1;
+      const radius = CONFIG.ORB_RADIUS + ring * 34;
+      const a = baseAngle * dir + (o / n) * TAU + ring * 0.6;
+      const ox = this.cx + Math.cos(a) * radius;
+      const oy = this.cy + Math.sin(a) * radius;
 
       for (let i = this.enemies.length - 1; i >= 0; i--) {
         const e = this.enemies[i];
@@ -2367,20 +5422,22 @@ class Game {
   /* ---------- 特殊攻撃: 地雷 ---------- */
 
   deployMine() {
-    if (this.mines.length >= CONFIG.MINE_MAX) return;
     const s = this.player.stats;
-    // コア周辺のランダム位置へ設置
-    const a = Math.random() * TAU;
-    const r = 60 + Math.random() * (s.range * 0.9);
-    const m = this.minePool.acquire();
-    m.init(
-      this.cx + Math.cos(a) * r,
-      this.cy + Math.sin(a) * r,
-      s.mineDecay,
-      s.mineDamage,
-      s.shockwaveSize
-    );
-    this.mines.push(m);
+    // Mine Cluster の数だけ、コア周辺のランダム位置へ設置
+    for (let i = 0; i < s.mineCount; i++) {
+      if (this.mines.length >= CONFIG.MINE_MAX) return;
+      const a = Math.random() * TAU;
+      const r = 60 + Math.random() * (s.range * 0.9);
+      const m = this.minePool.acquire();
+      m.init(
+        this.cx + Math.cos(a) * r,
+        this.cy + Math.sin(a) * r,
+        s.mineDecay,
+        s.mineDamage,
+        s.shockwaveSize
+      );
+      this.mines.push(m);
+    }
   }
 
   updateMines(dt) {
@@ -2621,17 +5678,22 @@ class Game {
     if (n <= 0) return;
 
     const base = this.player.orbAngle;
+    const rings = s.orbRings;
     ctx.shadowColor = '#00e5ff';
     ctx.shadowBlur = 14;
-    for (let o = 0; o < n; o++) {
-      const a = base + (o / n) * TAU;
-      const ox = this.cx + Math.cos(a) * CONFIG.ORB_RADIUS;
-      const oy = this.cy + Math.sin(a) * CONFIG.ORB_RADIUS;
+    for (let k = 0; k < n * rings; k++) {
+      const ring = Math.floor(k / n);
+      const o = k % n;
+      const dir = ring % 2 === 0 ? 1 : -1;
+      const radius = CONFIG.ORB_RADIUS + ring * 34;
+      const a = base * dir + (o / n) * TAU + ring * 0.6;
+      const ox = this.cx + Math.cos(a) * radius;
+      const oy = this.cy + Math.sin(a) * radius;
       ctx.beginPath();
       ctx.arc(ox, oy, CONFIG.ORB_SIZE, 0, TAU);
-      ctx.fillStyle = '#7df0ff';
+      ctx.fillStyle = ring === 0 ? '#7df0ff' : '#c79dff';
       ctx.fill();
-      ctx.strokeStyle = '#00e5ff';
+      ctx.strokeStyle = ring === 0 ? '#00e5ff' : '#a561ff';
       ctx.lineWidth = 1.5;
       ctx.stroke();
     }
@@ -2719,6 +5781,19 @@ class Game {
       }
       ctx.shadowBlur = 0;
 
+      // 遠距離敵の発射予告（着弾前に気づけるようにする）
+      if (e.type.behavior === 'ranged' && e.fireTimer > 0 && e.fireTimer < 0.55) {
+        const t = 1 - e.fireTimer / 0.55;
+        ctx.strokeStyle = 'rgba(165, 97, 255, ' + (0.15 + t * 0.45) + ')';
+        ctx.lineWidth = 1 + t * 1.5;
+        ctx.setLineDash([4, 6]);
+        ctx.beginPath();
+        ctx.moveTo(e.x, y);
+        ctx.lineTo(this.cx, this.cy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
       // アーマーブレイク表示
       if (e.armorBreakTimer > 0) {
         ctx.strokeStyle = 'rgba(255, 194, 51, 0.85)';
@@ -2758,13 +5833,14 @@ class Game {
   }
 
   drawProjectiles(ctx) {
+    const skin = this.activeSkin();
     ctx.lineCap = 'round';
     for (let i = 0; i < this.projectiles.length; i++) {
       const p = this.projectiles[i];
       const tier = p.critTier;
-      ctx.strokeStyle = tier === 2 ? '#ff2d95' : tier === 1 ? '#ffc233' : '#5cf0ff';
+      ctx.strokeStyle = tier === 2 ? '#ff2d95' : tier === 1 ? '#ffc233' : skin.shot;
       ctx.lineWidth = tier === 2 ? 5 : tier === 1 ? 4 : 2.5;
-      ctx.shadowColor = tier === 2 ? '#ff2d95' : tier === 1 ? '#ffc233' : '#00e5ff';
+      ctx.shadowColor = tier === 2 ? '#ff2d95' : tier === 1 ? '#ffc233' : skin.core;
       ctx.shadowBlur = 8;
       ctx.beginPath();
       ctx.moveTo(p.px, p.py);
@@ -2796,21 +5872,23 @@ class Game {
     ctx.translate(cx, cy);
     ctx.rotate(p.rotation * (rapid ? 3 : 1));
 
-    ctx.shadowColor = hurt > 0 ? '#ff3b5c' : rapid ? '#ffc233' : '#00e5ff';
+    const skin = this.activeSkin();
+
+    ctx.shadowColor = hurt > 0 ? '#ff3b5c' : rapid ? '#ffc233' : skin.core;
     ctx.shadowBlur = 22 * glow + hurt * 20 + (rapid ? 12 : 0);
 
     tracePolygon(ctx, 0, 0, r, 6, 0);
     ctx.fillStyle = hurt > 0
       ? `rgba(255, 59, 92, ${0.25 + hurt * 0.4})`
-      : rapid ? 'rgba(255, 194, 51, 0.16)' : 'rgba(0, 229, 255, 0.12)';
+      : rapid ? 'rgba(255, 194, 51, 0.16)' : 'rgba(255, 255, 255, 0.10)';
     ctx.fill();
-    ctx.strokeStyle = hurt > 0 ? '#ff5c78' : rapid ? '#ffc233' : '#00e5ff';
+    ctx.strokeStyle = hurt > 0 ? '#ff5c78' : rapid ? '#ffc233' : skin.core;
     ctx.lineWidth = 2;
     ctx.stroke();
 
     ctx.rotate(-p.rotation * 2.2);
     tracePolygon(ctx, 0, 0, r * 0.5, 6, 0);
-    ctx.strokeStyle = 'rgba(255, 45, 149, 0.8)';
+    ctx.strokeStyle = skin.accent;
     ctx.lineWidth = 1.5;
     ctx.stroke();
 
@@ -2864,8 +5942,8 @@ class Game {
     const w = this.waveManager;
 
     h.cash.textContent = formatNumber(this.cash);
-    h.coin.textContent = formatNumber(this.coin);
-    h.gem.textContent = formatNumber(this.gem);
+    h.coin.textContent = formatNumber(this.meta.coin);
+    h.gem.textContent = formatNumber(this.meta.gem);
 
     h.wave.textContent = w.wave;
     h.remaining.textContent = Math.max(w.remaining, 0);
@@ -2909,12 +5987,14 @@ class Game {
     }
   }
 
-  showToast(message) {
+  showToast(message, duration) {
     const t = this.hud.toast;
     t.textContent = message;
     t.classList.remove('hidden');
     if (this.toastTimer) clearTimeout(this.toastTimer);
-    this.toastTimer = setTimeout(() => t.classList.add('hidden'), 1800);
+    this.toastTimer = setTimeout(
+      () => t.classList.add('hidden'), duration || 1800
+    );
   }
 }
 

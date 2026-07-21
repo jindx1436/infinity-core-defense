@@ -56,20 +56,29 @@
       <button class="menu-btn" id="btn-shop" title="ショップ">
         <span class="menu-icon">▲</span><span class="menu-label">強化</span>
       </button>
-      <button class="menu-btn menu-btn-locked" data-locked="永続研究は第4段階で実装予定です" title="研究">
+      <button class="menu-btn" id="btn-lab" title="LAB（実時間研究）">
+        <span class="menu-icon">⚗</span><span class="menu-label">LAB</span>
+      </button>
+      <button class="menu-btn" id="btn-research" title="即時研究">
         <span class="menu-icon">◈</span><span class="menu-label">研究</span>
       </button>
-      <button class="menu-btn menu-btn-locked" data-locked="実績は第4段階で実装予定です" title="実績">
+      <button class="menu-btn" id="btn-achievements" title="実績">
         <span class="menu-icon">★</span><span class="menu-label">実績</span>
       </button>
       <button class="menu-btn" id="btn-codex" title="図鑑">
         <span class="menu-icon">▣</span><span class="menu-label">図鑑</span>
       </button>
+      <button class="menu-btn" id="btn-modules" title="モジュール">
+        <span class="menu-icon">⬢</span><span class="menu-label">装備</span>
+      </button>
+      <button class="menu-btn" id="btn-gacha" title="ガチャ">
+        <span class="menu-icon">✧</span><span class="menu-label">召喚</span>
+      </button>
       <button class="menu-btn menu-btn-locked" data-locked="ランキングは今後実装予定です" title="ランキング">
         <span class="menu-icon">♛</span><span class="menu-label">順位</span>
       </button>
-      <button class="menu-btn" id="btn-sound" title="サウンド">
-        <span class="menu-icon" id="sound-icon">♪</span><span class="menu-label">音</span>
+      <button class="menu-btn" id="btn-settings" title="設定">
+        <span class="menu-icon">⚙</span><span class="menu-label">設定</span>
       </button>
     </div>
 
@@ -86,6 +95,9 @@
         <div class="stat"><span class="stat-label">DPS</span><span id="val-dps">0</span></div>
         <button class="stat stat-btn" id="btn-buy-mult">
           <span class="stat-label">購入倍率</span><span id="val-buy-mult">×1</span>
+        </button>
+        <button class="stat stat-btn stat-speed" id="btn-speed">
+          <span class="stat-label">速度</span><span id="val-speed">×1</span>
         </button>
       </div>
     </div>
@@ -104,6 +116,10 @@
       <span id="shop-cash">$ <span id="val-shop-cash">0</span></span>
       <button id="btn-shop-close">✕</button>
     </div>
+    <div id="shop-search-row">
+      <input id="shop-search" type="text" placeholder="強化を検索…" autocomplete="off">
+      <button id="btn-search-clear" title="クリア">✕</button>
+    </div>
     <div id="shop-tabs">
       <button class="shop-tab active" data-category="attack">攻撃</button>
       <button class="shop-tab" data-category="defense">防御</button>
@@ -121,12 +137,151 @@
     <div id="codex-list"></div>
   </div>
 
+  <!-- ===== 永続研究パネル ===== -->
+  <div id="research-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">永続研究</span>
+      <span id="research-coin">◎ <span id="val-research-coin">0</span></span>
+      <button id="btn-research-close" class="panel-close">✕</button>
+    </div>
+    <div class="panel-note">
+      Coinで即座に購入できる永続強化です。時間のかかる大型研究はLABにあります。
+    </div>
+    <div id="research-list" class="panel-list"></div>
+  </div>
+
+  <!-- ===== LABパネル ===== -->
+  <div id="lab-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">LAB</span>
+      <span id="lab-currency">
+        <span id="val-lab-coin">0</span>◎
+        <span id="val-lab-gem">0</span>◆
+      </span>
+      <button id="btn-lab-close" class="panel-close">✕</button>
+    </div>
+    <div class="panel-note">
+      Coinで着手し、実時間の経過で完了します。ゲームを閉じている間も進行します。
+    </div>
+    <div id="lab-slot-row">
+      <span id="lab-slot-info">研究スロット 0 / 1</span>
+      <button id="btn-lab-slot" class="lab-slot-btn">スロット拡張</button>
+    </div>
+    <button id="btn-lab-ad" class="lab-ad-btn">広告を見て +5◆</button>
+    <div id="lab-tabs">
+      <button class="lab-tab active" data-category="attack">攻撃</button>
+      <button class="lab-tab" data-category="defense">防御</button>
+      <button class="lab-tab" data-category="economy">経済</button>
+      <button class="lab-tab" data-category="special">特殊</button>
+    </div>
+    <div id="lab-list" class="panel-list"></div>
+  </div>
+
+  <!-- ===== モジュールパネル ===== -->
+  <div id="modules-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">モジュール</span>
+      <span id="module-shard"><span id="val-module-shard">0</span>◈</span>
+      <button id="btn-modules-close" class="panel-close">✕</button>
+    </div>
+    <div id="module-slots"></div>
+    <div class="panel-note">
+      装備枠をタップすると外せます。分解するとシャード◈になり、強化に使えます。
+    </div>
+    <div id="module-tabs">
+      <button class="module-tab active" data-type="all">全て</button>
+      <button class="module-tab" data-type="attack">攻撃</button>
+      <button class="module-tab" data-type="defense">防御</button>
+      <button class="module-tab" data-type="economy">経済</button>
+      <button class="module-tab" data-type="special">特殊</button>
+    </div>
+    <div id="modules-list" class="panel-list"></div>
+  </div>
+
+  <!-- ===== ガチャパネル ===== -->
+  <div id="gacha-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">召喚</span>
+      <span id="gacha-gem"><span id="val-gacha-gem">0</span>◆</span>
+      <button id="btn-gacha-close" class="panel-close">✕</button>
+    </div>
+    <div id="gacha-buttons">
+      <button id="btn-gacha-1" class="gacha-btn">1回<span>100◆</span></button>
+      <button id="btn-gacha-10" class="gacha-btn multi">10回<span>900◆</span></button>
+    </div>
+    <div class="panel-note">10回召喚は最後の1枠が Rare 以上確定です。</div>
+    <div id="gacha-results"></div>
+    <div class="gacha-section-title">スキン</div>
+    <div id="gacha-skins"></div>
+    <div class="gacha-section-title">排出率</div>
+    <div id="gacha-rates"></div>
+  </div>
+
+  <!-- ===== 実績パネル ===== -->
+  <div id="achievements-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">実績</span>
+      <span id="achievements-progress">0 / 0</span>
+      <button id="btn-achievements-close" class="panel-close">✕</button>
+    </div>
+    <div id="achievements-list" class="panel-list"></div>
+  </div>
+
+  <!-- ===== 設定パネル ===== -->
+  <div id="settings-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">設定</span>
+      <button id="btn-settings-close" class="panel-close">✕</button>
+    </div>
+    <div id="settings-body" class="panel-list">
+      <button id="btn-toggle-sound" class="settings-btn">サウンド: ON</button>
+
+      <div id="start-wave-control">
+        <div class="start-wave-row">
+          <span class="settings-key">開始 Wave</span>
+          <div class="start-wave-stepper">
+            <button id="btn-start-wave-dec" class="stepper-btn">−</button>
+            <span id="start-wave-val">Wave 1</span>
+            <button id="btn-start-wave-inc" class="stepper-btn">＋</button>
+          </div>
+        </div>
+        <div id="start-wave-hint" class="start-wave-hint"></div>
+      </div>
+      <div id="settings-stats"></div>
+      <button id="btn-reset-save" class="settings-btn danger">セーブデータを初期化</button>
+    </div>
+  </div>
+
   <!-- ===== スタート画面 ===== -->
   <div id="overlay-start" class="overlay">
     <div class="overlay-inner">
       <h1 class="game-title">INFINITY<br>CORE DEFENSE</h1>
       <p class="game-sub">エネルギーコアを360°の脅威から防衛せよ</p>
       <button id="btn-start" class="neon-btn">起動する</button>
+    </div>
+  </div>
+
+  <!-- ===== オフライン報酬 ===== -->
+  <div id="overlay-offline" class="overlay hidden">
+    <div class="overlay-inner">
+      <h1 class="offline-title">OFFLINE REPORT</h1>
+      <p class="offline-sub">不在中もコアは稼働していました</p>
+      <p class="offline-elapsed">経過時間 <span id="offline-time">0分</span></p>
+      <div class="offline-rewards">
+        <div class="offline-row">
+          <span class="offline-key">Cash（次の周回へ）</span>
+          <span class="offline-val" id="offline-cash">$0</span>
+        </div>
+        <div class="offline-row">
+          <span class="offline-key">Coin</span>
+          <span class="offline-val" id="offline-coin">0 ◎</span>
+        </div>
+        <div class="offline-row" id="offline-gem-row">
+          <span class="offline-key">Gem</span>
+          <span class="offline-val" id="offline-gem">0 ◆</span>
+        </div>
+      </div>
+      <button id="btn-offline-close" class="neon-btn">受け取る</button>
     </div>
   </div>
 
