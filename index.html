@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#05070d">
+<title>Infinity Core Defense</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="game-container">
+
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ===== HUD ===== -->
+  <div id="hud">
+
+    <!-- 左上: 通貨 -->
+    <div id="hud-currency">
+      <div class="currency-item currency-cash">
+        <span class="currency-icon">$</span>
+        <span id="val-cash">0</span>
+      </div>
+      <div class="currency-item currency-coin">
+        <span class="currency-icon">◎</span>
+        <span id="val-coin">0</span>
+      </div>
+      <div class="currency-item currency-gem">
+        <span class="currency-icon">◆</span>
+        <span id="val-gem">0</span>
+      </div>
+    </div>
+
+    <!-- 中央上: Wave情報 -->
+    <div id="hud-wave">
+      <div id="wave-label">WAVE <span id="val-wave">1</span></div>
+      <div id="wave-enemies">残敵 <span id="val-remaining">0</span></div>
+      <div id="wave-bar"><div id="wave-bar-fill"></div></div>
+    </div>
+
+    <!-- ボスHPバー -->
+    <div id="boss-bar" class="hidden">
+      <div id="boss-name">BOSS</div>
+      <div id="boss-hp"><div id="boss-hp-fill"></div></div>
+      <div id="boss-hp-text">100%</div>
+    </div>
+
+    <!-- ボス出現警告 -->
+    <div id="boss-warning" class="hidden">
+      <div id="boss-warning-text">WARNING</div>
+      <div id="boss-warning-sub">大型個体が接近中</div>
+    </div>
+
+    <!-- 右: メニュー -->
+    <div id="hud-menu" class="hud-interactive">
+      <button class="menu-btn" id="btn-shop" title="ショップ">
+        <span class="menu-icon">▲</span><span class="menu-label">強化</span>
+      </button>
+      <button class="menu-btn menu-btn-locked" data-locked="永続研究は第4段階で実装予定です" title="研究">
+        <span class="menu-icon">◈</span><span class="menu-label">研究</span>
+      </button>
+      <button class="menu-btn menu-btn-locked" data-locked="実績は第4段階で実装予定です" title="実績">
+        <span class="menu-icon">★</span><span class="menu-label">実績</span>
+      </button>
+      <button class="menu-btn" id="btn-codex" title="図鑑">
+        <span class="menu-icon">▣</span><span class="menu-label">図鑑</span>
+      </button>
+      <button class="menu-btn menu-btn-locked" data-locked="ランキングは今後実装予定です" title="ランキング">
+        <span class="menu-icon">♛</span><span class="menu-label">順位</span>
+      </button>
+      <button class="menu-btn" id="btn-sound" title="サウンド">
+        <span class="menu-icon" id="sound-icon">♪</span><span class="menu-label">音</span>
+      </button>
+    </div>
+
+    <!-- 下部: ステータス -->
+    <div id="hud-bottom" class="hud-interactive">
+      <div id="hp-bar-wrap">
+        <div id="wall-bar" class="hidden"><div id="wall-bar-fill"></div></div>
+        <div id="hp-bar"><div id="hp-bar-fill"></div></div>
+        <div id="hp-text"><span id="val-hp">100</span> / <span id="val-hp-max">100</span></div>
+      </div>
+      <div id="stats-row">
+        <div class="stat"><span class="stat-label">ATK</span><span id="val-atk">0</span></div>
+        <div class="stat"><span class="stat-label">SPD</span><span id="val-aspd">0</span></div>
+        <div class="stat"><span class="stat-label">DPS</span><span id="val-dps">0</span></div>
+        <button class="stat stat-btn" id="btn-buy-mult">
+          <span class="stat-label">購入倍率</span><span id="val-buy-mult">×1</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- デバッグ用FPS表示（動作確認用） -->
+    <div id="fps">60</div>
+
+    <!-- 通知トースト -->
+    <div id="toast" class="hidden"></div>
+  </div>
+
+  <!-- ===== ショップパネル ===== -->
+  <div id="shop-panel" class="closed">
+    <div id="shop-header">
+      <span id="shop-title">リアルタイム強化</span>
+      <span id="shop-cash">$ <span id="val-shop-cash">0</span></span>
+      <button id="btn-shop-close">✕</button>
+    </div>
+    <div id="shop-tabs">
+      <button class="shop-tab active" data-category="attack">攻撃</button>
+      <button class="shop-tab" data-category="defense">防御</button>
+      <button class="shop-tab" data-category="utility">補助</button>
+    </div>
+    <div id="shop-list"></div>
+  </div>
+
+  <!-- ===== 図鑑パネル ===== -->
+  <div id="codex-panel" class="closed">
+    <div id="codex-header">
+      <span id="codex-title">敵性体データベース</span>
+      <button id="btn-codex-close">✕</button>
+    </div>
+    <div id="codex-list"></div>
+  </div>
+
+  <!-- ===== スタート画面 ===== -->
+  <div id="overlay-start" class="overlay">
+    <div class="overlay-inner">
+      <h1 class="game-title">INFINITY<br>CORE DEFENSE</h1>
+      <p class="game-sub">エネルギーコアを360°の脅威から防衛せよ</p>
+      <button id="btn-start" class="neon-btn">起動する</button>
+    </div>
+  </div>
+
+  <!-- ===== ゲームオーバー画面 ===== -->
+  <div id="overlay-gameover" class="overlay hidden">
+    <div class="overlay-inner">
+      <h1 class="gameover-title">CORE DESTROYED</h1>
+      <p class="gameover-info">到達 WAVE <span id="go-wave">1</span></p>
+      <p class="gameover-info">撃破数 <span id="go-kills">0</span></p>
+      <p class="gameover-info">獲得 <span id="go-coin">0</span> ◎</p>
+      <button id="btn-restart" class="neon-btn">再起動する</button>
+    </div>
+  </div>
+
+</div>
+<script src="script.js"></script>
+</body>
+</html>
