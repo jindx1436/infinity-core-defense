@@ -2239,6 +2239,7 @@ function tracePolygon(ctx, x, y, r, sides, rotation) {
  * ======================================================= */
 
 const SAVE_KEY = 'icd_save_v1';
+const GAME_VERSION = 'Ver 0.9.0';   // Ver1.0 リリースまでの開発版表記
 
 /**
  * 永続データの保存・復元。
@@ -2308,6 +2309,15 @@ class SaveManager {
       elementResearch: {},      // 属性研究ID → レベル
       fragments: 0,             // Core Fragment（属性専用資源）
       elementMigrated: false,   // 旧Wave解放方式からの移行済みフラグ
+      // --- Phase 5-A②: 表示・UI設定（既存セーブは既定値で補完される） ---
+      zoom: 1,                  // カメラ表示倍率（0.7〜1.2）
+      showDamage: true,         // ダメージ数字の表示
+      showEnemyHp: true,        // 敵HPバーの表示
+      fxQuality: 'high',        // エフェクト品質 high|med|low
+      renderScale: 'high',      // 画質（解像度）high|med|low
+      bgmOn: true,              // BGM
+      vibrationOn: true,        // 振動（対応端末のみ）
+      showFps: false,           // FPS表示
     };
   }
 
@@ -2357,7 +2367,9 @@ class SaveManager {
 class Sfx {
   constructor() {
     this.ctx = null;
-    this.enabled = true;
+    this.enabled = true;      // SE（効果音）
+    this.bgmEnabled = true;   // BGM
+    this.bgmHigh = false;     // BGMの強度（ボス戦などで上げる）
     this.master = null;
     this.bgmGain = null;
     this.bgmTimer = null;
@@ -2374,11 +2386,26 @@ class Sfx {
       this.master = this.ctx.createGain();
       this.master.gain.value = this.enabled ? 0.9 : 0;
       this.master.connect(this.ctx.destination);
+      // BGMはSEマスターとは独立に出力へ繋ぎ、個別にON/OFFできるようにする
       this.bgmGain = this.ctx.createGain();
-      this.bgmGain.gain.value = 0.16;
-      this.bgmGain.connect(this.master);
+      this.bgmGain.gain.value = this._bgmLevel();
+      this.bgmGain.connect(this.ctx.destination);
     }
     if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
+
+  _bgmLevel() {
+    if (!this.bgmEnabled) return 0;
+    return this.bgmHigh ? 0.24 : 0.16;
+  }
+
+  _applyBgmGain() {
+    if (this.bgmGain) this.bgmGain.gain.value = this._bgmLevel();
+  }
+
+  setBgmEnabled(on) {
+    this.bgmEnabled = on;
+    this._applyBgmGain();
   }
 
   setEnabled(on) {
@@ -2624,7 +2651,8 @@ class Sfx {
 
   /** ボス戦中はBGMの音量を上げて緊張感を出す */
   setBgmIntensity(high) {
-    if (this.bgmGain) this.bgmGain.gain.value = high ? 0.24 : 0.16;
+    this.bgmHigh = high;
+    this._applyBgmGain();
   }
 }
 
@@ -3334,6 +3362,7 @@ class Player {
     if (Math.random() < s.critChance + heat.crit) {
       critTier = 1;
       dmg *= s.critMultiplier;
+      g.runCrits = (g.runCrits || 0) + 1;
       if (Math.random() < s.superCritChance) {
         critTier = 2;
         dmg *= s.superCritMultiplier;
@@ -5435,6 +5464,96 @@ class Settings {
       this.refresh();
     });
 
+    // ---- Phase 5-A②: 表示・サウンド・端末の各設定 ----
+    const g = game;
+    const persist = () => { g.requestSave(); g.flushSave(); this.refresh(); };
+    const toggleMeta = (key, apply) => {
+      g.sfx.buy();
+      g.meta[key] = !(g.meta[key] !== false);   // true<->false（既定true）
+      if (apply) apply(g.meta[key]);
+      persist();
+    };
+
+    // 表示倍率（Zoom）ステッパー
+    this.zoomVal = document.getElementById('zoom-val');
+    const ZOOM_STEPS = [0.7, 0.8, 0.9, 1.0, 1.1, 1.2];
+    const shiftZoom = (dir) => {
+      let idx = ZOOM_STEPS.indexOf(Math.round((g.meta.zoom || 1) * 10) / 10);
+      if (idx < 0) idx = 3;
+      const next = Math.max(0, Math.min(ZOOM_STEPS.length - 1, idx + dir));
+      if (next === idx) { g.sfx.deny(); return; }
+      g.meta.zoom = ZOOM_STEPS[next];
+      g.sfx.buy();
+      g.renderFrame();
+      persist();
+    };
+    document.getElementById('btn-zoom-dec').addEventListener('click', () => shiftZoom(-1));
+    document.getElementById('btn-zoom-inc').addEventListener('click', () => shiftZoom(1));
+
+    // トグル系
+    this.damageBtn = document.getElementById('btn-toggle-damage');
+    this.damageBtn.addEventListener('click', () => toggleMeta('showDamage'));
+    this.enemyHpBtn = document.getElementById('btn-toggle-enemyhp');
+    this.enemyHpBtn.addEventListener('click', () => toggleMeta('showEnemyHp'));
+
+    this.bgmBtn = document.getElementById('btn-toggle-bgm');
+    this.bgmBtn.addEventListener('click', () => {
+      g.sfx.unlock();
+      const on = !(g.meta.bgmOn !== false);
+      g.meta.bgmOn = on;
+      g.sfx.setBgmEnabled(on);
+      if (on && g.running) g.sfx.startBgm(); else if (!on) g.sfx.stopBgm();
+      g.sfx.buy();
+      persist();
+    });
+
+    this.vibrationBtn = document.getElementById('btn-toggle-vibration');
+    this.vibrationBtn.addEventListener('click', () => {
+      toggleMeta('vibrationOn');
+      if (g.meta.vibrationOn) g.vibrate(20);
+    });
+
+    this.fpsBtn = document.getElementById('btn-toggle-fps');
+    this.fpsBtn.addEventListener('click', () => {
+      toggleMeta('showFps', () => g.applyDisplaySettings());
+    });
+
+    // サイクル系（高→中→低）
+    this.fxQualityBtn = document.getElementById('btn-cycle-fxquality');
+    this.fxQualityBtn.addEventListener('click', () => {
+      const order = ['high', 'med', 'low'];
+      const i = order.indexOf(g.meta.fxQuality);
+      g.meta.fxQuality = order[(i + 1) % order.length];
+      g.sfx.buy();
+      g.applyDisplaySettings();
+      persist();
+    });
+    this.renderScaleBtn = document.getElementById('btn-cycle-renderscale');
+    this.renderScaleBtn.addEventListener('click', () => {
+      const order = ['high', 'med', 'low'];
+      const i = order.indexOf(g.meta.renderScale);
+      g.meta.renderScale = order[(i + 1) % order.length];
+      g.sfx.buy();
+      g.applyDisplaySettings();
+      persist();
+    });
+
+    // 戦闘中: ホームへ戻る（リタイア） 2段階確認
+    this.retreatBtn = document.getElementById('btn-retreat-home');
+    this.retreatHint = document.getElementById('retreat-hint');
+    this.retreatArmed = false;
+    this.retreatBtn.addEventListener('click', () => {
+      if (!this.retreatArmed) {
+        this.retreatArmed = true;
+        this.retreatBtn.textContent = '本当にホームへ戻る（周回をリタイア）';
+        this.retreatBtn.classList.add('danger-armed');
+        return;
+      }
+      g.sfx.buy();
+      this.close();
+      g.retreatToHome();
+    });
+
     this.resetBtn = document.getElementById('btn-reset-save');
     this.resetBtn.addEventListener('click', () => this.onResetClick());
 
@@ -5462,12 +5581,24 @@ class Settings {
     this.game.closePanels(this);
     this.isOpen = true;
     this.panel.classList.remove('closed');
+    // 戦闘中に設定を開いている間は一時停止する
+    if (this.game.screenState === 'battle') this.game.setPaused(true);
     this.refresh();
   }
   close() {
     this.isOpen = false;
     this.panel.classList.add('closed');
     this.disarmReset();
+    this.disarmRetreat();
+    if (this.game.screenState === 'battle') this.game.setPaused(false);
+  }
+
+  disarmRetreat() {
+    this.retreatArmed = false;
+    if (this.retreatBtn) {
+      this.retreatBtn.textContent = '⌂ ホームに戻る（リタイア）';
+      this.retreatBtn.classList.remove('danger-armed');
+    }
   }
 
   /** 開始Waveを増減。上限は研究で解放した値 */
@@ -5518,8 +5649,41 @@ class Settings {
     const g = this.game;
     const m = g.meta;
 
-    this.soundBtn.textContent = 'サウンド: ' + (g.sfx.enabled ? 'ON' : 'OFF');
+    this.soundBtn.textContent = 'SE: ' + (g.sfx.enabled ? 'ON' : 'OFF');
+    this.soundBtn.classList.toggle('off', !g.sfx.enabled);
     this.devBox.classList.toggle('hidden', !g.meta.devMode);
+
+    // 表示・サウンド・端末トグルの表示反映
+    const onoff = (v) => (v !== false) ? 'ON' : 'OFF';
+    const qLabel = (v) => v === 'low' ? '低' : (v === 'med' ? '中' : '高');
+    if (this.zoomVal) this.zoomVal.textContent = Math.round((g.meta.zoom || 1) * 100) + '%';
+    if (this.damageBtn) {
+      this.damageBtn.textContent = 'ダメージ数字: ' + onoff(g.meta.showDamage);
+      this.damageBtn.classList.toggle('off', g.meta.showDamage === false);
+    }
+    if (this.enemyHpBtn) {
+      this.enemyHpBtn.textContent = '敵HPバー: ' + onoff(g.meta.showEnemyHp);
+      this.enemyHpBtn.classList.toggle('off', g.meta.showEnemyHp === false);
+    }
+    if (this.fxQualityBtn) this.fxQualityBtn.textContent = 'エフェクト品質: ' + qLabel(g.meta.fxQuality);
+    if (this.renderScaleBtn) this.renderScaleBtn.textContent = '画質: ' + qLabel(g.meta.renderScale);
+    if (this.bgmBtn) {
+      this.bgmBtn.textContent = 'BGM: ' + onoff(g.meta.bgmOn);
+      this.bgmBtn.classList.toggle('off', g.meta.bgmOn === false);
+    }
+    if (this.vibrationBtn) {
+      this.vibrationBtn.textContent = '振動: ' + onoff(g.meta.vibrationOn);
+      this.vibrationBtn.classList.toggle('off', g.meta.vibrationOn === false);
+    }
+    if (this.fpsBtn) {
+      this.fpsBtn.textContent = 'FPS表示: ' + (g.meta.showFps ? 'ON' : 'OFF');
+      this.fpsBtn.classList.toggle('off', !g.meta.showFps);
+    }
+
+    // 戦闘中のみ「ホームに戻る（リタイア）」を表示
+    const inBattle = g.screenState === 'battle';
+    if (this.retreatBtn) this.retreatBtn.classList.toggle('hidden', !inBattle);
+    if (this.retreatHint) this.retreatHint.classList.toggle('hidden', !inBattle);
 
     const maxStart = Math.max(1, g.player.stats.startWave);
     if (g.meta.selectedStartWave > maxStart) g.meta.selectedStartWave = maxStart;
@@ -5657,6 +5821,8 @@ class Game {
 
     // 保存されていたサウンド設定・ゲームスピードを復元
     this.sfx.setEnabled(this.meta.soundOn !== false);
+    this.sfx.setBgmEnabled(this.meta.bgmOn !== false);
+    this.applyDisplaySettings();
     this.gameSpeed = GAME_SPEEDS.indexOf(this.meta.gameSpeed) >= 0
       ? this.meta.gameSpeed
       : 1;
@@ -5690,6 +5856,10 @@ class Game {
     this.renderFrame();
 
     this._loop = this.loop.bind(this);
+
+    // 起動直後はタイトル画面（音声解放のためのタップを待つ）
+    this.screenState = 'title';
+    this.setScreenState('title');
   }
 
   cacheHudElements() {
@@ -5736,15 +5906,74 @@ class Game {
       goWave: $('go-wave'),
       goKills: $('go-kills'),
       goCoin: $('go-coin'),
+      goCash: $('go-cash'),
+      goGem: $('go-gem'),
+      goCrit: $('go-crit'),
+      goOverclock: $('go-overclock'),
+      // ホーム画面
+      overlayHome: $('overlay-home'),
+      homeCoin: $('home-coin'),
+      homeGem: $('home-gem'),
+      homeFrag: $('home-frag'),
+      homeElement: $('home-element'),
+      homeLevel: $('home-level'),
+      homeVersion: $('home-version'),
+      homePlaytime: $('home-playtime'),
     };
   }
 
   bindEvents() {
     window.addEventListener('resize', () => this.resize());
+    // タイトル「起動する」→ 音声解放してホーム画面へ
     document.getElementById('btn-start')
-      .addEventListener('click', () => { this.sfx.unlock(); this.start(); });
+      .addEventListener('click', () => { this.sfx.unlock(); this.bootToHome(); });
+    // ホーム「START」→ 現在の装備・属性・研究を読み込んで出撃
+    document.getElementById('btn-home-start')
+      .addEventListener('click', () => { this.sfx.unlock(); this.enterBattle(); });
+    // ゲームオーバー画面 → ホームへ戻る
     document.getElementById('btn-restart')
-      .addEventListener('click', () => { this.sfx.unlock(); this.restart(); });
+      .addEventListener('click', () => { this.sfx.unlock(); this.returnToHome(); });
+
+    // ホーム画面のメニュータイル
+    const homeActions = {
+      lab: () => this.lab.open(),
+      research: () => this.research.open(),
+      elements: () => this.elements.open(),
+      modules: () => this.modules.open(),
+      gacha: () => this.gacha.open(),
+      codex: () => this.codex.open(),
+      achievements: () => this.achievements.open(),
+      settings: () => this.settings.open(),
+      // Ver1.0で実装予定
+      ultimate: () => this.showToast('Ver1.0で実装予定'),
+      drone: () => this.showToast('Ver1.0で実装予定'),
+      daily: () => this.showToast('Ver1.0で実装予定'),
+    };
+    document.querySelectorAll('#overlay-home [data-home]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const action = homeActions[btn.dataset.home];
+        if (!action) return;
+        this.sfx.unlock();
+        this.sfx.buy();
+        action();
+      });
+    });
+
+    // 戦闘中の属性クイック情報（属性バッジのタップで表示）
+    const badge = document.getElementById('element-badge');
+    if (badge) {
+      badge.classList.add('tappable');
+      badge.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.toggleElementQuickInfo();
+      });
+    }
+    document.addEventListener('click', (e) => {
+      const qi = document.getElementById('element-quickinfo');
+      if (!qi || qi.classList.contains('hidden')) return;
+      if (e.target.closest('#element-quickinfo') || e.target.closest('#element-badge')) return;
+      qi.classList.add('hidden');
+    });
 
     this.hud.speedBtn.addEventListener('click', () => this.cycleGameSpeed());
 
@@ -6661,6 +6890,8 @@ class Game {
   /* ---------- オーバークロック ---------- */
 
   onOverclockStart(isSuper) {
+    this.runOverclocks = (this.runOverclocks || 0) + 1;
+    this.vibrate(isSuper ? [30, 40, 30] : 20);
     this.flashScreen(isSuper ? 0.45 : 0.28, isSuper ? '#ff2d95' : '#ffc233');
     this.shakeScreen(isSuper ? 14 : 8);
     if (isSuper) {
@@ -6747,6 +6978,7 @@ class Game {
 
   addCash(amount) {
     this.cash += amount;
+    if (this.running && !this.paused) this.runCashEarned += amount;
     if (this.cash > this.meta.maxCash) {
       this.meta.maxCash = this.cash;
       this.saveDirty = true;
@@ -6762,6 +6994,7 @@ class Game {
   }
 
   addCoin(amount) {
+    if (this.running) this.runCoinEarned += amount * this.player.stats.coinBonus;
     this.coinFrac += amount * this.player.stats.coinBonus;
     if (this.coinFrac >= 1) {
       const whole = Math.floor(this.coinFrac);
@@ -6772,6 +7005,7 @@ class Game {
   }
 
   addGem(amount) {
+    if (this.running) this.runGemEarned += amount;
     this.meta.gem += amount;
     this.saveDirty = true;
   }
@@ -6779,7 +7013,7 @@ class Game {
   /* ---------- 画面サイズ・背景 ---------- */
 
   resize() {
-    this.dpr = Math.min(window.devicePixelRatio || 1, CONFIG.DPR_MAX);
+    this.dpr = Math.min(window.devicePixelRatio || 1, this.renderScaleCap());
     this.width = window.innerWidth;
     this.height = window.innerHeight;
     this.cx = this.width / 2;
@@ -6865,6 +7099,12 @@ class Game {
     this.runKills = 0;
     this.runBossKills = 0;
     this.coinFrac = 0;
+    // リザルト表示用の周回内カウンタ（表示専用・バランスには影響しない）
+    this.runCoinEarned = 0;
+    this.runGemEarned = 0;
+    this.runCashEarned = 0;
+    this.runCrits = 0;
+    this.runOverclocks = 0;
 
     // 開始Waveは「戦域転送」で解放した上限内で、設定から選んだ値を使う
     const startWave = Math.max(1, Math.min(this.meta.selectedStartWave, s.startWave));
@@ -6881,7 +7121,94 @@ class Game {
     requestAnimationFrame(this._loop);
   }
 
-  start() {
+  /* ---------- 画面ステート ---------- */
+
+  /** 戦闘中の属性クイック情報の表示切替（属性名・Lv・簡単な効果） */
+  toggleElementQuickInfo() {
+    const qi = document.getElementById('element-quickinfo');
+    if (!qi) return;
+    if (!qi.classList.contains('hidden')) {
+      qi.classList.add('hidden');
+      return;
+    }
+    const el = this.activeElement();
+    const icon = document.getElementById('eqi-icon');
+    icon.textContent = el.icon;
+    icon.style.color = el.color;
+    document.getElementById('eqi-name').textContent = el.name;
+    document.getElementById('eqi-name').style.color = el.color;
+    document.getElementById('eqi-lv').textContent = 'Lv ' + this.elementLevelOf(el.id);
+    document.getElementById('eqi-desc').textContent = el.desc || el.tagline || '';
+    qi.classList.remove('hidden');
+    this.sfx.buy();
+    clearTimeout(this._eqiTimer);
+    this._eqiTimer = setTimeout(() => qi.classList.add('hidden'), 4500);
+  }
+
+  /** body のステートクラスを切り替える（CSSで表示を出し分ける） */
+  setScreenState(state) {
+    const b = document.body;
+    b.classList.remove('state-title', 'state-home', 'state-battle');
+    b.classList.add('state-' + state);
+    this.screenState = state;
+  }
+
+  /* ---------- 表示設定（Phase 5-A②） ---------- */
+
+  /** エフェクト品質・解像度など、表示系設定をまとめて適用する */
+  applyDisplaySettings() {
+    const q = this.meta.fxQuality;
+    this.fxMul = q === 'low' ? 0.4 : (q === 'med' ? 0.7 : 1);
+    // 画質（解像度）は resize で dpr に反映される
+    if (this.canvas) this.resize();
+    // FPS表示のトグル
+    if (this.hud && this.hud.fps) {
+      this.hud.fps.classList.toggle('force-hidden',
+        !(this.meta.showFps || this.meta.devMode));
+    }
+  }
+
+  /** 画質設定に応じた最大DPR（解像度上限） */
+  renderScaleCap() {
+    const s = this.meta.renderScale;
+    if (s === 'low') return 1;
+    if (s === 'med') return 1.5;
+    return CONFIG.DPR_MAX;
+  }
+
+  /** カメラ表示倍率（0.7〜1.2、範囲外は1に丸める） */
+  zoomFactor() {
+    const z = this.meta.zoom;
+    return (typeof z === 'number' && z >= 0.5 && z <= 2) ? z : 1;
+  }
+
+  /** 対応端末での触覚フィードバック（設定でOFFなら何もしない） */
+  vibrate(pattern) {
+    if (!this.meta.vibrationOn) return;
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      try { navigator.vibrate(pattern); } catch (e) { /* 非対応端末は無視 */ }
+    }
+  }
+
+  /** 戦闘中に一時停止（設定を開いている間など）。ゲームバランスには影響しない */
+  setPaused(on) {
+    this.paused = !!on;
+  }
+
+  /** 戦闘を中断してホームへ戻る（リタイア）。獲得済み通貨は保持される */
+  retreatToHome() {
+    if (this.waveManager && this.waveManager.wave > this.meta.bestWave) {
+      this.meta.bestWave = this.waveManager.wave;
+    }
+    this.requestSave();
+    this.flushSave();
+    this.setPaused(false);
+    this.prepareFreshBattle();
+    this.showHome();
+  }
+
+  /** タイトル「起動する」→ 音声解放・オフライン報酬回収の上でホームへ */
+  bootToHome() {
     this.hud.overlayStart.classList.add('hidden');
 
     // オフライン報酬があれば受け取り画面を表示する
@@ -6909,10 +7236,85 @@ class Game {
       setTimeout(() => this.showToast('研究完了: ' + names, 3600), 900);
     }
 
-    this.beginRun();
+    this.showHome();
   }
 
-  restart() {
+  /** ホーム画面（拠点）を表示する */
+  showHome() {
+    this.running = false;
+    this.closePanels(null);
+    this.setScreenState('home');
+
+    this.hud.overlayStart.classList.add('hidden');
+    this.hud.overlayGameOver.classList.add('hidden');
+    this.hud.overlayHome.classList.remove('hidden');
+
+    // ホームではBGMを止めて静かにする（出撃時に再開）
+    this.sfx.setBgmIntensity(false);
+    this.sfx.stopBgm();
+
+    this.updateHomeHud();
+    this.startHomeRefresh();   // パネルでの通貨変動をホームに反映
+    this.renderFrame();        // 背後のコア/グリッドを1フレーム描画
+  }
+
+  /** ホーム表示中だけ上部バーを定期更新する（軽量ポーリング） */
+  startHomeRefresh() {
+    this.stopHomeRefresh();
+    this._homeTimer = setInterval(() => {
+      if (this.screenState === 'home') this.updateHomeHud();
+      else this.stopHomeRefresh();
+    }, 300);
+  }
+
+  stopHomeRefresh() {
+    if (this._homeTimer) {
+      clearInterval(this._homeTimer);
+      this._homeTimer = null;
+    }
+  }
+
+  /** ホーム画面上部の通貨・属性・Lv・バージョン・プレイ時間を更新 */
+  updateHomeHud() {
+    const h = this.hud;
+    const m = this.meta;
+    if (!h.overlayHome) return;
+
+    h.homeCoin.textContent = formatNumber(m.coin);
+    h.homeGem.textContent = formatNumber(m.gem);
+    h.homeFrag.textContent = formatNumber(m.fragments);
+
+    // 装備中（次周回で確定）の属性を表示
+    const elId = (m.pendingElement && m.pendingElement !== 'none')
+      ? m.pendingElement : m.activeElement;
+    const el = elementById(elId) || elementById('none');
+    h.homeElement.textContent = el.icon + ' ' + el.name;
+    h.homeElement.style.color = el.color;
+
+    h.homeLevel.textContent = this.homePlayerLevel();
+    h.homeVersion.textContent = GAME_VERSION;
+    h.homePlaytime.textContent = this.formatPlaytime(m.playTime);
+  }
+
+  /** 表示専用のプレイヤーLv（進行度から算出、ゲーム性には影響しない） */
+  homePlayerLevel() {
+    const m = this.meta;
+    const kills = m.totalKills || 0;
+    const best = m.bestWave || 0;
+    return 1 + Math.floor(Math.sqrt(kills / 40)) + Math.floor(best / 5);
+  }
+
+  formatPlaytime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    if (sec < 60) return sec + '秒';
+    if (sec < 3600) return Math.floor(sec / 60) + '分';
+    const h = Math.floor(sec / 3600);
+    const min = Math.floor((sec % 3600) / 60);
+    return h + '時間 ' + min + '分';
+  }
+
+  /** 次の戦闘に向けて盤面をまっさらにする（周回の共通初期化） */
+  prepareFreshBattle() {
     this.releaseAll(this.enemies, this.enemyPool);
     this.releaseAll(this.projectiles, this.projectilePool);
     this.releaseAll(this.enemyProjectiles, this.enemyProjectilePool);
@@ -6939,10 +7341,66 @@ class Game {
     this.player = new Player(this);
     this.waveManager = new WaveManager(this);
     this.shop.refresh(true);
-
-    this.hud.overlayGameOver.classList.add('hidden');
     this.sfx.setBgmIntensity(false);
-    this.beginRun();
+  }
+
+  /** ホーム「START」→ 現在の構成を読み込み、ズーム演出付きで出撃 */
+  enterBattle() {
+    this.stopHomeRefresh();
+    this.closePanels(null);
+    this.hud.overlayHome.classList.add('hidden');
+    this.hud.overlayGameOver.classList.add('hidden');
+    this.setScreenState('battle');
+
+    // 装備・属性・研究・モジュールを最新状態で反映してから出撃
+    this.player.recalc();
+
+    // 軽いズーム演出
+    document.body.classList.add('battle-enter');
+    setTimeout(() => document.body.classList.remove('battle-enter'), 600);
+
+    // 3・2・1・START のカウントダウン後に周回開始
+    this.startCountdown(() => this.beginRun());
+  }
+
+  /** 戦闘開始カウントダウン（3→2→1→START）。演出のみでバランス不変 */
+  startCountdown(done) {
+    const overlay = document.getElementById('overlay-countdown');
+    const num = document.getElementById('countdown-num');
+    if (!overlay || !num) { done(); return; }
+
+    // カウントダウン中は静止した戦場を背後に描画しておく
+    this.renderFrame();
+    overlay.classList.remove('hidden');
+    const seq = ['3', '2', '1', 'START'];
+    let i = 0;
+    const tick = () => {
+      if (i >= seq.length) {
+        overlay.classList.add('hidden');
+        done();
+        return;
+      }
+      const last = (i === seq.length - 1);
+      num.textContent = seq[i];
+      num.classList.toggle('cd-go', last);
+      // アニメを再生し直す
+      num.classList.remove('cd-anim');
+      void num.offsetWidth;
+      num.classList.add('cd-anim');
+      this.sfx.unlock();
+      if (last) { this.sfx.waveClear(); this.vibrate(30); }
+      else { this.sfx.buy(); }
+      i++;
+      setTimeout(tick, last ? 550 : 620);
+    };
+    tick();
+  }
+
+  /** 戦闘終了（リザルト）→ ホームへ戻る */
+  returnToHome() {
+    this.prepareFreshBattle();
+    this.hud.overlayGameOver.classList.add('hidden');
+    this.showHome();
   }
 
   releaseAll(arr, pool) {
@@ -6952,8 +7410,10 @@ class Game {
 
   gameOver() {
     this.running = false;
+    this.setPaused(false);
     this.closePanels(null);
     this.sfx.gameOver();
+    this.vibrate([60, 50, 120]);
     this.flashScreen(0.4, '#ff3b5c');
     this.shakeScreen(CONFIG.SHAKE_MAX);
 
@@ -6961,6 +7421,8 @@ class Game {
       this.waveManager.wave * 1.5 + this.runKills * 0.1
     );
     this.addCoin(earned);
+    // 終了ボーナスもリザルトの「獲得Coin」に含める（running=false 後のため手動加算）
+    this.runCoinEarned += earned * this.player.stats.coinBonus;
 
     // 周回の記録を永続データへ反映
     if (this.waveManager.wave > this.meta.bestWave) {
@@ -6970,10 +7432,15 @@ class Game {
     this.checkAchievements();
     this.flushSave();
 
-    this.hud.goWave.textContent = this.waveManager.wave;
-    this.hud.goKills.textContent = formatNumber(this.runKills);
-    this.hud.goCoin.textContent = formatNumber(earned);
-    this.hud.overlayGameOver.classList.remove('hidden');
+    const h = this.hud;
+    h.goWave.textContent = this.waveManager.wave;
+    h.goKills.textContent = formatNumber(this.runKills);
+    h.goCoin.textContent = formatNumber(Math.floor(this.runCoinEarned));
+    if (h.goCash) h.goCash.textContent = '$' + formatNumber(Math.floor(this.runCashEarned));
+    if (h.goGem) h.goGem.textContent = formatNumber(this.runGemEarned);
+    if (h.goCrit) h.goCrit.textContent = formatNumber(this.runCrits);
+    if (h.goOverclock) h.goOverclock.textContent = formatNumber(this.runOverclocks);
+    h.overlayGameOver.classList.remove('hidden');
   }
 
   onWaveStart(wave) {
@@ -7077,6 +7544,13 @@ class Game {
     let dt = (now - this.lastTime) / 1000;
     this.lastTime = now;
     if (dt > CONFIG.MAX_DT) dt = CONFIG.MAX_DT;
+
+    // 一時停止中はゲーム内時間を進めず、描画とループのみ継続する
+    if (this.paused) {
+      this.renderFrame();
+      requestAnimationFrame(this._loop);
+      return;
+    }
 
     // 演出タイマーは実時間で減衰させる
     const realDt = dt;
@@ -7397,7 +7871,7 @@ class Game {
     enemy.hitFlash = 0.08;
     this.dpsAccum += dmg;
 
-    if (showNumber) {
+    if (showNumber && this.meta.showDamage !== false) {
       const d = this.damageNumberPool.acquire();
       d.init(enemy.x, enemy.y - enemy.size, dmg, critTier || 0);
       this.damageNumbers.push(d);
@@ -7800,6 +8274,8 @@ class Game {
   }
 
   spawnParticles(x, y, count, speed, life, size, color) {
+    const mul = this.fxMul != null ? this.fxMul : 1;
+    count = Math.max(1, Math.round(count * mul));
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * TAU;
       const v = speed * (0.4 + Math.random() * 0.6);
@@ -7829,7 +8305,12 @@ class Game {
       sx = (Math.random() - 0.5) * this.shake;
       sy = (Math.random() - 0.5) * this.shake;
     }
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, sx * this.dpr, sy * this.dpr);
+    // カメラ表示倍率（コア中心を固定してスケール）。Canvasサイズは不変。
+    const z = this.zoomFactor();
+    const s = this.dpr * z;
+    const tx = (this.cx * (1 - z) + sx) * this.dpr;
+    const ty = (this.cy * (1 - z) + sy) * this.dpr;
+    ctx.setTransform(s, 0, 0, s, tx, ty);
 
     this.drawRange(ctx);
     this.drawGarlicField(ctx);
@@ -8203,7 +8684,7 @@ class Game {
       }
 
       // HPバー（ボスは画面上部のバーで表示するため省略）
-      if (!e.isBoss && e.hp < e.maxHp) {
+      if (!e.isBoss && e.hp < e.maxHp && this.meta.showEnemyHp !== false) {
         const w = e.size * 2;
         const ratio = Math.max(e.hp / e.maxHp, 0);
         const bx = e.x - e.size;
@@ -8428,5 +8909,5 @@ class Game {
  * ======================================================= */
 
 window.addEventListener('DOMContentLoaded', () => {
-  new Game();
+  window.game = new Game();
 });

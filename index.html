@@ -115,9 +115,20 @@
 
     <!-- デバッグ用FPS表示（動作確認用） -->
     <div id="fps">60</div>
+  </div>
 
-    <!-- 通知トースト -->
-    <div id="toast" class="hidden"></div>
+  <!-- 通知トースト（HUDの外に出して常に最前面へ表示する） -->
+  <div id="toast" class="hidden"></div>
+
+  <!-- 戦闘中の属性クイック情報（属性バッジのタップで表示） -->
+  <div id="element-quickinfo" class="hidden">
+    <div class="eqi-head">
+      <span id="eqi-icon">◇</span>
+      <span id="eqi-name">属性</span>
+      <span id="eqi-lv">Lv 1</span>
+    </div>
+    <div id="eqi-desc"></div>
+    <div class="eqi-note">戦闘中は属性を変更できません</div>
   </div>
 
   <!-- ===== ショップパネル ===== -->
@@ -257,8 +268,30 @@
       <button id="btn-settings-close" class="panel-close">✕</button>
     </div>
     <div id="settings-body" class="panel-list">
-      <button id="btn-toggle-sound" class="settings-btn">サウンド: ON</button>
+      <button id="btn-retreat-home" class="settings-btn retreat hidden">⌂ ホームに戻る（リタイア）</button>
+      <div id="retreat-hint" class="settings-note hidden">戦闘を中断してホームへ戻ります。獲得済みのCoin・Gemは保持されます。</div>
 
+      <div class="settings-group-title">表示</div>
+      <div class="settings-ctrl-row">
+        <span class="settings-key">表示倍率 (Zoom)</span>
+        <div class="start-wave-stepper">
+          <button id="btn-zoom-dec" class="stepper-btn">−</button>
+          <span id="zoom-val">100%</span>
+          <button id="btn-zoom-inc" class="stepper-btn">＋</button>
+        </div>
+      </div>
+      <button id="btn-toggle-damage" class="settings-btn toggle">ダメージ数字: ON</button>
+      <button id="btn-toggle-enemyhp" class="settings-btn toggle">敵HPバー: ON</button>
+      <button id="btn-cycle-fxquality" class="settings-btn toggle">エフェクト品質: 高</button>
+      <button id="btn-cycle-renderscale" class="settings-btn toggle">画質: 高</button>
+
+      <div class="settings-group-title">サウンド・端末</div>
+      <button id="btn-toggle-sound" class="settings-btn toggle">SE: ON</button>
+      <button id="btn-toggle-bgm" class="settings-btn toggle">BGM: ON</button>
+      <button id="btn-toggle-vibration" class="settings-btn toggle">振動: ON</button>
+      <button id="btn-toggle-fps" class="settings-btn toggle">FPS表示: OFF</button>
+
+      <div class="settings-group-title">周回</div>
       <div id="start-wave-control">
         <div class="start-wave-row">
           <span class="settings-key">開始 Wave</span>
@@ -287,6 +320,112 @@
 
       <button id="btn-reset-save" class="settings-btn danger">セーブデータを初期化</button>
     </div>
+  </div>
+
+  <!-- ===== ホーム画面（拠点） ===== -->
+  <div id="overlay-home" class="overlay hidden">
+
+    <!-- 上部バー（右上）: 通貨・属性・Lv -->
+    <div id="home-topbar">
+      <div class="home-info-cluster">
+        <div class="home-currency" title="Coin">
+          <span class="hc-icon coin">◎</span><span id="home-coin">0</span>
+        </div>
+        <div class="home-currency" title="Gem">
+          <span class="hc-icon gem">◆</span><span id="home-gem">0</span>
+        </div>
+        <div class="home-currency" title="Core Fragment">
+          <span class="hc-icon frag">◆◆</span><span id="home-frag">0</span>
+        </div>
+      </div>
+      <div class="home-info-cluster">
+        <div class="home-element" id="home-element-wrap" title="装備中の属性コア">
+          <span class="he-label">属性</span>
+          <span id="home-element">◇ ニュートラル</span>
+        </div>
+        <div class="home-level" title="プレイヤーレベル">
+          <span class="hl-label">Lv</span>
+          <span id="home-level">1</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- メニュー本体 -->
+    <div id="home-body">
+
+      <!-- 左メニュー -->
+      <div class="home-menu-col home-menu-left">
+        <button class="home-tile" data-home="lab">
+          <span class="ht-icon">⚗</span>
+          <span class="ht-text"><span class="ht-name">LAB</span><span class="ht-sub">実時間研究</span></span>
+        </button>
+        <button class="home-tile" data-home="research">
+          <span class="ht-icon">◈</span>
+          <span class="ht-text"><span class="ht-name">研究</span><span class="ht-sub">永続強化</span></span>
+        </button>
+        <button class="home-tile" data-home="elements">
+          <span class="ht-icon">◇</span>
+          <span class="ht-text"><span class="ht-name">属性コア</span><span class="ht-sub">属性変更</span></span>
+        </button>
+        <button class="home-tile soon" data-home="ultimate">
+          <span class="ht-icon">⚔</span>
+          <span class="ht-text"><span class="ht-name">究極武器</span><span class="ht-sub">Coming Soon</span></span>
+        </button>
+        <button class="home-tile soon" data-home="drone">
+          <span class="ht-icon">⬡</span>
+          <span class="ht-text"><span class="ht-name">AIドローン</span><span class="ht-sub">Coming Soon</span></span>
+        </button>
+      </div>
+
+      <!-- 中央: タイトルとSTART -->
+      <div class="home-center">
+        <h1 class="home-title">INFINITY<br>CORE DEFENSE</h1>
+        <div class="home-tagline">拠点からコアを出撃させよ</div>
+        <button id="btn-home-start" class="home-start-btn">
+          <span class="hsb-ring"></span>
+          <span class="hsb-label">START</span>
+          <span class="hsb-sub">戦闘開始</span>
+        </button>
+      </div>
+
+      <!-- 右メニュー -->
+      <div class="home-menu-col home-menu-right">
+        <button class="home-tile" data-home="modules">
+          <span class="ht-icon">⬢</span>
+          <span class="ht-text"><span class="ht-name">装備</span><span class="ht-sub">モジュール</span></span>
+        </button>
+        <button class="home-tile" data-home="gacha">
+          <span class="ht-icon">✧</span>
+          <span class="ht-text"><span class="ht-name">召喚</span><span class="ht-sub">ガチャ</span></span>
+        </button>
+        <button class="home-tile" data-home="codex">
+          <span class="ht-icon">▣</span>
+          <span class="ht-text"><span class="ht-name">図鑑</span><span class="ht-sub">敵性体データ</span></span>
+        </button>
+        <button class="home-tile" data-home="achievements">
+          <span class="ht-icon">★</span>
+          <span class="ht-text"><span class="ht-name">実績</span><span class="ht-sub">アチーブメント</span></span>
+        </button>
+        <button class="home-tile soon" data-home="daily">
+          <span class="ht-icon">◷</span>
+          <span class="ht-text"><span class="ht-name">デイリー</span><span class="ht-sub">Coming Soon</span></span>
+        </button>
+      </div>
+
+    </div>
+
+    <!-- 下部: 設定・バージョン・プレイ時間 -->
+    <div id="home-footer">
+      <button class="home-settings-btn" data-home="settings">
+        <span class="ht-icon">⚙</span><span>設定</span>
+      </button>
+      <div class="home-meta">
+        <span id="home-version">Ver 0.9.0</span>
+        <span class="home-meta-sep">·</span>
+        <span>プレイ時間 <span id="home-playtime">0分</span></span>
+      </div>
+    </div>
+
   </div>
 
   <!-- ===== スタート画面 ===== -->
@@ -350,11 +489,44 @@
   <div id="overlay-gameover" class="overlay hidden">
     <div class="overlay-inner">
       <h1 class="gameover-title">CORE DESTROYED</h1>
-      <p class="gameover-info">到達 WAVE <span id="go-wave">1</span></p>
-      <p class="gameover-info">撃破数 <span id="go-kills">0</span></p>
-      <p class="gameover-info">獲得 <span id="go-coin">0</span> ◎</p>
-      <button id="btn-restart" class="neon-btn">再起動する</button>
+      <div class="result-grid">
+        <div class="result-row highlight">
+          <span class="result-key">到達 WAVE</span>
+          <span class="result-val" id="go-wave">1</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">敵撃破数</span>
+          <span class="result-val" id="go-kills">0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">クリティカル</span>
+          <span class="result-val" id="go-crit">0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">Overclock発動</span>
+          <span class="result-val" id="go-overclock">0</span>
+        </div>
+        <div class="result-divider"></div>
+        <div class="result-row">
+          <span class="result-key">獲得 Coin</span>
+          <span class="result-val coin" id="go-coin">0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">獲得 Cash</span>
+          <span class="result-val cash" id="go-cash">$0</span>
+        </div>
+        <div class="result-row">
+          <span class="result-key">獲得 Gem</span>
+          <span class="result-val gem" id="go-gem">0</span>
+        </div>
+      </div>
+      <button id="btn-restart" class="neon-btn">ホームへ戻る</button>
     </div>
+  </div>
+
+  <!-- ===== 戦闘開始カウントダウン ===== -->
+  <div id="overlay-countdown" class="hidden">
+    <div id="countdown-num">3</div>
   </div>
 
 </div>
