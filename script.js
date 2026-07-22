@@ -135,6 +135,12 @@ const BASE_STATS = Object.freeze({
   lifesteal: 0,               // 与ダメージのHP吸収率
   critChainChance: 0,         // クリティカル時の追撃発生率
   executeThreshold: 0,        // 残HP割合がこの値以下の敵を即撃破
+  // 重力属性（リニューアル：重圧・重力圧縮・重力崩壊）
+  gravExecute: 0,             // 重力圧縮の即死ライン（通常敵）
+  gravBossExecute: 0,         // 重力圧縮の即死ライン（ボス）
+  gravCollapseDamage: 0,      // 重力崩壊で周囲へ与える最大HP割合ダメージ
+  gravCollapseRange: 0,       // 重力崩壊の影響半径
+  gravCore: 0,                // 重力エフェクト強化（視覚演出の濃さ）
   waveSkipChance: 0,          // Waveを飛ばす確率
   omniStrikeChance: 0,        // 射程内全体攻撃の発生率
   orbRings: 1,                // オーブの軌道リング数
@@ -1217,13 +1223,57 @@ const ELEMENT_UNLOCK_COSTS = [3, 5, 8, 12, 18];
 const DEFAULT_LEVEL_COST = [2, 4, 7, 10];
 
 /**
+ * 重力属性の調整用定数。倍率・数値はすべてここで一元管理する。
+ * バランス調整はこの定数を触るだけで完結するようにしている。
+ */
+const GRAVITY = {
+  // ---- 重圧（Gravity Pressure）----
+  // プレイヤーからの距離（正規化：0=至近, 1=圧力場の外縁）に対する被ダメージ倍率。
+  // 外縁100% → 中距離120% → 近距離150% → 至近200%。間は線形補間する。
+  pressureZones: [
+    { d: 1.00, mul: 1.00 },
+    { d: 0.66, mul: 1.20 },
+    { d: 0.33, mul: 1.50 },
+    { d: 0.00, mul: 2.00 },
+  ],
+  pressureRangeFactor: 1.15,   // 射程の何倍までを圧力場とみなすか
+
+  // ---- 重力圧縮（Gravity Compression）----
+  executeNormal: 0.15,         // 通常敵：残HP15%以下で圧壊
+  executeBoss: 0.03,           // ボス：残HP3%以下で圧壊
+  executeNormalCap: 0.40,      // 研究で伸ばせる上限（通常）
+  executeBossCap: 0.12,        // 研究で伸ばせる上限（ボス）
+
+  // ---- 重力崩壊（Gravity Collapse）----
+  collapseRange: 130,          // 崩壊の影響半径（基準値）
+  collapseDamagePct: 0.12,     // 周囲の敵へ与える「最大HP」割合ダメージ
+  collapseTriggerDist: 170,    // プレイヤーからこの距離以内での撃破が崩壊の対象
+};
+
+/** 正規化距離（0=至近, 1=外縁）から重圧の基準倍率を線形補間で求める */
+function gravityPressureMul(nd) {
+  const z = GRAVITY.pressureZones;
+  if (nd >= z[0].d) return z[0].mul;
+  if (nd <= z[z.length - 1].d) return z[z.length - 1].mul;
+  for (let i = 0; i < z.length - 1; i++) {
+    const a = z[i];
+    const b = z[i + 1];   // a.d > b.d
+    if (nd <= a.d && nd >= b.d) {
+      const t = (a.d - nd) / (a.d - b.d);
+      return a.mul + (b.mul - a.mul) * t;
+    }
+  }
+  return 1;
+}
+
+/**
  * 進行状況に応じたおすすめ属性。上から順に条件を満たす最初のものを表示する。
  * 強制ではなくガイドとしての提示。
  */
 const ELEMENT_RECOMMENDATIONS = [
   {
     minWave: 300, id: 'gravity',
-    reasons: ['ビルドの幅が広がり、高難度攻略に向く', '敵を集めて範囲攻撃と噛み合う'],
+    reasons: ['高難度ほど重圧の火力が伸びる', '敵を至近で捌けるなら圧倒的な殲滅力'],
   },
   {
     minWave: 100, id: 'thunder',
@@ -1248,7 +1298,7 @@ const ELEMENT_RECOMMENDATIONS = [
   },
   {
     minWave: 0, id: 'gravity',
-    reasons: ['敵を密集させて範囲攻撃と噛み合う', 'ビルド次第で伸びしろが大きい'],
+    reasons: ['至近距離で与ダメージが最大2倍', '瀕死の敵を圧壊で即死させられる'],
   },
 ];
 
@@ -1455,77 +1505,124 @@ const ELEMENTS = [
   },
   {
     id: 'gravity', name: '重力', icon: '◉', color: '#a561ff',
-    tagline: '引き寄せと集束',
-    desc: '敵を中心へ引き寄せて密集させ、密集した敵ほど受けるダメージが増える。',
+    tagline: '重圧と圧壊',
+    desc: '敵が近づくほど重力が強まり、押し潰されて受けるダメージが増加する。瀕死の敵は圧壊し、近距離での撃破は圧力波を生む。',
     levelCost: [3, 5, 9, 14],
-    rating: 5, archetype: 'テクニカル',
-    guide: '敵を集めて他スキルとのシナジーを狙う。ビルド次第で非常に強力な上級者向け。',
+    rating: 5, archetype: 'リスク・リターン型',
+    guide: '敵を引き付けるリスクを負う代わりに、至近距離で圧倒的な火力を得る。高難度ほど真価を発揮する上級者向け。',
     tooltip: {
-      merit: ['敵が密集するほどダメージが伸びる', 'オーブ・地雷・爆発と極めて相性が良い', 'Lv5でブラックホールが発生する'],
-      demerit: ['敵を引き寄せるためコアへの圧力が上がる', '防御が薄いと一気に崩れる'],
-      weapons: ['範囲殲滅系の究極武器（今後実装）'],
-      drones: ['攻撃ドローン／シールドドローン（今後実装）'],
+      merit: [
+        '敵がプレイヤーへ近づくほど与ダメージが最大2倍に増加',
+        '瀕死の敵を重力で圧壊させ即死させる（ボスにも有効）',
+        '近距離での撃破が圧力波となり周囲を巻き込む',
+      ],
+      demerit: [
+        '真価を出すには敵を至近距離まで引き付ける必要がある',
+        '防御が薄いと押し寄せられて一気に崩れる',
+        '遠距離で捌く立ち回りとは噛み合わない',
+      ],
+      weapons: ['近接・範囲圧殺系の究極武器（今後実装）'],
+      drones: ['シールドドローン／攻撃ドローン（今後実装）'],
     },
     expTable: ELEMENT_EXP_TABLE,
+    // pressureScale: 重圧の強さ / executeLine: 圧縮の即死ライン（Lv3で解放）
+    // collapseDamage: 崩壊ダメージ（Lv4で解放）/ collapseRange: 崩壊範囲
+    // coreEffect: エフェクト強化
     baseParams: {
-      pullRadius: 90, pullForce: 26, clusterMul: 0.12, blackholeChance: 0,
+      pressureScale: 1.0,
+      executeLine: 0,
+      collapseDamage: 0,
+      collapseRange: GRAVITY.collapseRange,
+      coreEffect: 1.0,
     },
     levelPerks: [
       null,
-      { text: '吸引範囲 +10%', k: 'pullRadius', mul: 1.10 },
-      { text: '吸引力 +20%', k: 'pullForce', mul: 1.20 },
-      { text: '密集ダメージ倍率 上昇', k: 'clusterMul', mul: 1.45 },
-      { text: '一定確率でブラックホール発生', k: 'blackholeChance', set: 0.04 },
+      // Lv2: 近距離ダメージ倍率アップ
+      { text: '重圧の近距離ダメージ倍率 +15%', k: 'pressureScale', mul: 1.15 },
+      // Lv3: 重力圧縮 解放
+      { text: '重力圧縮 解放（瀕死の敵を圧壊）', k: 'executeLine', set: GRAVITY.executeNormal },
+      // Lv4: 重力崩壊 解放
+      { text: '重力崩壊 解放（近距離撃破で圧力波）', k: 'collapseDamage', set: GRAVITY.collapseDamagePct },
+      // Lv5: 近距離ダメージ倍率さらにアップ ＋ 崩壊範囲アップ（複合効果）
+      {
+        text: '重圧の倍率 +20% ・ 重力崩壊の範囲 +40%',
+        effects: [
+          { k: 'pressureScale', mul: 1.20 },
+          { k: 'collapseRange', mul: 1.40 },
+        ],
+      },
     ],
     research: [
-      { id: 'grvRadius', name: '重力場拡張', k: 'pullRadius', per: 0.04,
-        maxLevel: 40, baseCost: 160, growth: 1.24, unit: '判定範囲' },
-      { id: 'grvForce', name: '重力増幅', k: 'pullForce', per: 0.06,
-        maxLevel: 40, baseCost: 190, growth: 1.25, unit: '吸引力' },
-      { id: 'grvDamage', name: '圧壊圧力', k: 'clusterMul', per: 0.06,
-        maxLevel: 50, baseCost: 240, growth: 1.26, unit: '密集ダメージ' },
-      { id: 'grvHole', name: '特異点生成', k: 'blackholeChance', per: 0.25,
-        maxLevel: 20, baseCost: 800, growth: 1.38, unit: 'ブラックホール率' },
+      { id: 'grvPressure', name: 'Gravity Pressure', k: 'pressureScale', per: 0.03,
+        maxLevel: 40, baseCost: 200, growth: 1.25, unit: '近距離ダメージ倍率' },
+      { id: 'grvCompress', name: 'Gravity Compression', k: 'executeLine', per: 0.04,
+        maxLevel: 30, baseCost: 260, growth: 1.27, unit: '即死ライン' },
+      { id: 'grvCollapse', name: 'Gravity Collapse', k: 'collapseRange', per: 0.04,
+        maxLevel: 40, baseCost: 220, growth: 1.24, unit: '崩壊範囲' },
+      { id: 'grvCollapseDmg', name: 'Gravity Collapse Damage', k: 'collapseDamage', per: 0.05,
+        maxLevel: 40, baseCost: 240, growth: 1.26, unit: '崩壊ダメージ' },
+      { id: 'grvCore', name: 'Gravity Core', k: 'coreEffect', per: 0.03,
+        maxLevel: 30, baseCost: 300, growth: 1.28, unit: '重力エフェクト' },
     ],
-    stats(s, p) { s.range += 20 * p; },
-    passive(game, dt, p, P) {
-      const pull = P.pullForce * p * dt;
-      for (let i = 0; i < game.enemies.length; i++) {
-        const e = game.enemies[i];
-        if (!e) continue;
-        if (e.knockbackImmune) continue;   // ベヒモス等は位置を動かせない
-        const dx = game.cx - e.x;
-        const dy = game.cy - e.y;
-        const d = Math.hypot(dx, dy) || 1;
-        if (d < 120) continue;
-        e.x += (dx / d) * pull;
-        e.y += (dy / d) * pull;
-      }
+    stats(s, p, P) {
+      // 圧力場を機能させるため射程をわずかに底上げ
+      s.range += 15 * p;
+
+      // 重力圧縮の即死ライン（研究で伸長、上限でクランプ）
+      const line = Math.min(P.executeLine, GRAVITY.executeNormalCap);
+      s.gravExecute = line;
+      // ボスの即死ラインは通常ラインの伸びに比例させる
+      s.gravBossExecute = line > 0
+        ? Math.min(GRAVITY.executeBoss * (line / GRAVITY.executeNormal), GRAVITY.executeBossCap)
+        : 0;
+
+      // 重力崩壊
+      s.gravCollapseDamage = P.collapseDamage;
+      s.gravCollapseRange = P.collapseRange;
+      s.gravCore = P.coreEffect;
     },
-    onHit(game, enemy, dmg, p, P) {
-      const rSq = P.pullRadius * P.pullRadius;
-      let near = 0;
+    // 重圧：プレイヤーに近い敵ほど与ダメージが増える（主砲へ適用）
+    damageMul(game, enemy, p, P) {
+      const range = game.player.stats.range * GRAVITY.pressureRangeFactor;
+      const dx = enemy.x - game.cx;
+      const dy = enemy.y - game.cy;
+      const nd = Math.min((Math.hypot(dx, dy)) / (range || 1), 1);
+      const base = gravityPressureMul(nd);        // 1.0〜2.0
+      // pressureScale はボーナス部分（100%を超える分）を拡大する
+      return 1 + (base - 1) * P.pressureScale * p;
+    },
+    // 重力崩壊：プレイヤー付近での撃破時に圧力波を発生させる
+    onKill(game, enemy, p, P) {
+      if (P.collapseDamage <= 0) return;
+      const pdx = enemy.x - game.cx;
+      const pdy = enemy.y - game.cy;
+      const trig = GRAVITY.collapseTriggerDist;
+      if (pdx * pdx + pdy * pdy > trig * trig) return;
+
+      const range = P.collapseRange;
+      const rSq = range * range;
+      const dmgPct = P.collapseDamage * p;
+      game.spawnPressureWave(enemy.x, enemy.y, range);
       for (let i = 0; i < game.enemies.length; i++) {
         const e = game.enemies[i];
-        if (!e) continue;
+        if (!e || e === enemy) continue;
         const dx = e.x - enemy.x;
         const dy = e.y - enemy.y;
-        if (dx * dx + dy * dy <= rSq) near++;
-      }
-      if (near > 1) {
-        game.damageEnemy(enemy, dmg * Math.min(near - 1, 6) * P.clusterMul * p, 0, false);
-      }
-      // 特異点: 周囲を強く引き寄せて大ダメージ
-      if (P.blackholeChance > 0 && Math.random() < P.blackholeChance) {
-        game.spawnBlackhole(enemy.x, enemy.y, P.pullRadius * 1.8, dmg * 3 * p);
+        if (dx * dx + dy * dy > rSq) continue;
+        game.damageEnemy(e, e.maxHp * dmgPct, 0, false);
       }
     },
-    effectText: (P, p) =>
-      '吸引力 ' + (P.pullForce * p).toFixed(0) + ' ・ 密集で最大 +' +
-      (P.clusterMul * 6 * p * 100).toFixed(0) + '%' +
-      (P.blackholeChance > 0
-        ? ' ・ 特異点 ' + (P.blackholeChance * 100).toFixed(1) + '%'
-        : ''),
+    effectText: (P, p) => {
+      const peak = (1 + (2.0 - 1) * P.pressureScale * p) * 100;
+      const line = Math.min(P.executeLine, GRAVITY.executeNormalCap);
+      const parts = ['至近で最大 ' + peak.toFixed(0) + '%'];
+      if (line > 0) parts.push('圧壊 HP' + (line * 100).toFixed(0) + '%以下');
+      if (P.collapseDamage > 0) {
+        parts.push('崩壊 ' + (P.collapseDamage * p * 100).toFixed(0) + '% / 半径' +
+          P.collapseRange.toFixed(0));
+      }
+      return parts.join(' ・ ');
+    },
   },
   {
     id: 'economy', name: '経済', icon: '$', color: '#3dff9e',
@@ -1587,8 +1684,15 @@ function elementParams(el, level, researchLevels) {
   for (let lv = 2; lv <= level; lv++) {
     const perk = el.levelPerks[lv - 1];
     if (!perk) continue;
-    if (perk.set !== undefined) P[perk.k] = perk.set;
-    else P[perk.k] *= perk.mul;
+    // 1つのレベルで複数のパラメータを変える場合は perk.effects を使う。
+    // 単一の場合は従来どおり perk 自身を効果として扱う（後方互換）。
+    const effects = perk.effects || [perk];
+    for (let j = 0; j < effects.length; j++) {
+      const eff = effects[j];
+      if (eff.k === undefined) continue;
+      if (eff.set !== undefined) P[eff.k] = eff.set;
+      else if (eff.mul !== undefined) P[eff.k] *= eff.mul;
+    }
   }
 
   // 属性専用研究
@@ -7188,6 +7292,12 @@ class Game {
       dmg *= 1 + s.damagePerMeter * (Math.hypot(dx, dy) / 100);
     }
 
+    // 重力の重圧：プレイヤーに近い敵ほど与ダメージが増える
+    const elForDmg = this.activeElement();
+    if (elForDmg.damageMul) {
+      dmg *= elForDmg.damageMul(this, enemy, this.elementPower(), this.elParams);
+    }
+
     if (s.armorBreakChance > 0 && Math.random() < s.armorBreakChance) {
       enemy.dmgTakenMul = s.armorBreakMultiplier;
       enemy.armorBreakTimer = CONFIG.ARMOR_BREAK_DURATION;
@@ -7304,6 +7414,17 @@ class Game {
     if (enemy.hp > 0 && th > 0 && !enemy.isBoss && enemy.hp / enemy.maxHp <= th) {
       enemy.hp = 0;
       this.spawnParticles(enemy.x, enemy.y, 8, 200, 0.3, 3, '#ffffff');
+    }
+
+    // 重力圧縮: 一定割合以下の敵を重力で圧壊させる（ボスにも有効）
+    if (enemy.hp > 0) {
+      const gLine = enemy.isBoss
+        ? this.player.stats.gravBossExecute
+        : this.player.stats.gravExecute;
+      if (gLine > 0 && enemy.hp / enemy.maxHp <= gLine) {
+        enemy.hp = 0;
+        this.spawnGravityCrush(enemy.x, enemy.y, enemy.size);
+      }
     }
 
     if (enemy.hp <= 0) this.killEnemy(enemy);
@@ -7567,6 +7688,44 @@ class Game {
     const w = this.shockwavePool.acquire();
     w.init(x, y, radius, color);
     this.shockwaves.push(w);
+  }
+
+  /** 重力圧縮：敵が内側へ潰れる演出（吸い込むパーティクル＋小さな衝撃） */
+  spawnGravityCrush(x, y, size) {
+    const n = 12;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU;
+      const r = (size || 12) + 14;
+      // 外周から中心へ吸い込まれるように動く粒子
+      const px = x + Math.cos(a) * r;
+      const py = y + Math.sin(a) * r;
+      const part = this.particlePool.acquire();
+      part.init(px, py, -Math.cos(a) * 180, -Math.sin(a) * 180, 0.28, 2.6, '#c77dff');
+      this.particles.push(part);
+    }
+    this.spawnShockwave(x, y, (size || 12) + 6, '#a561ff');
+    this.spawnParticles(x, y, 6, 60, 0.3, 3, '#e0c0ff');
+    this.sfx.hit();
+  }
+
+  /** 重力崩壊：圧力波（炎の爆発とは異なる、内向きに収束してから弾ける演出） */
+  spawnPressureWave(x, y, radius) {
+    // 収束するリング（負の速度で内向き）＋外へ抜ける圧力波リング
+    this.spawnShockwave(x, y, radius, '#a561ff');
+    const n = 16;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * TAU;
+      const r = radius * 0.9;
+      const px = x + Math.cos(a) * r;
+      const py = y + Math.sin(a) * r;
+      const part = this.particlePool.acquire();
+      // いったん中心へ collapse する圧力の流れ
+      part.init(px, py, -Math.cos(a) * 260, -Math.sin(a) * 260, 0.32, 3, '#b57dff');
+      this.particles.push(part);
+    }
+    this.spawnParticles(x, y, 10, 120, 0.3, 2.4, '#e0c0ff');
+    this.shakeScreen(4);
+    this.sfx.explosion();
   }
 
   updateShockwaves(dt) {
@@ -7867,6 +8026,41 @@ class Game {
   }
 
   drawEnemies(ctx) {
+    // 重力属性の重圧場：中心に近い敵ほど濃い重力リングを敷く
+    const gravEl = this.activeElement();
+    const gravActive = gravEl.id === 'gravity';
+    const gravRange = gravActive
+      ? this.player.stats.range * GRAVITY.pressureRangeFactor
+      : 0;
+    const gravCore = gravActive ? (this.player.stats.gravCore || 1) : 1;
+
+    if (gravActive) {
+      for (let i = 0; i < this.enemies.length; i++) {
+        const e = this.enemies[i];
+        if (!e) continue;
+        const dx = e.x - this.cx;
+        const dy = e.y - this.cy;
+        const nd = Math.min(Math.hypot(dx, dy) / (gravRange || 1), 1);
+        const intensity = (1 - nd);           // 中心へ近いほど1へ
+        if (intensity <= 0.02) continue;
+        const rY = e.y + Math.sin(e.wobble) * 1.5;
+        // 歪みリング（近いほど濃く・太く）
+        ctx.strokeStyle = 'rgba(165, 97, 255, ' + (0.12 + intensity * 0.55 * gravCore) + ')';
+        ctx.lineWidth = 1 + intensity * 2.5;
+        ctx.beginPath();
+        ctx.arc(e.x, rY, e.size + 5 + intensity * 8, 0, TAU);
+        ctx.stroke();
+        // 至近ではさらに内側の重い輪を重ねる
+        if (intensity > 0.5) {
+          ctx.strokeStyle = 'rgba(224, 192, 255, ' + ((intensity - 0.5) * 0.7) + ')';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(e.x, rY, e.size + 2, 0, TAU);
+          ctx.stroke();
+        }
+      }
+    }
+
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       const wob = Math.sin(e.wobble) * 1.5;
