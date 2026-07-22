@@ -196,13 +196,132 @@ const ENEMY_TYPES = [
     weight: 28, minWave: 14,
   },
   {
+    id: 'shield', name: 'シールダー', desc: '前方バリアで正面からのダメージを大幅に軽減',
+    color: '#4fa8ff', glow: 'rgba(79,168,255,0.6)', shape: 'hex',
+    size: 16, baseHp: 40, baseAtk: 14, baseSpeed: 30,
+    cash: 20, coin: 0, exp: 5,
+    behavior: 'charge', weight: 24, minWave: 20,
+    // シールドが正面を向いている間は被ダメージを軽減する（氷・重力で崩しやすい）
+    special: { type: 'shield', reduction: 0.75, angle: 1.4 },
+  },
+  {
+    id: 'healer', name: 'メディック', desc: '周囲の味方を持続回復する支援機。最優先で処理したい',
+    color: '#3dff9e', glow: 'rgba(61,255,158,0.6)', shape: 'triangle',
+    size: 13, baseHp: 34, baseAtk: 8, baseSpeed: 40,
+    cash: 24, coin: 1, exp: 6,
+    behavior: 'charge', weight: 18, minWave: 30,
+    special: { type: 'healer', radius: 130, healPct: 0.04, interval: 0.8 },
+  },
+  {
+    id: 'splitter', name: 'ディバイダー', desc: '撃破されると2体の小型機に分裂する',
+    color: '#ff9f3d', glow: 'rgba(255,159,61,0.6)', shape: 'square',
+    size: 15, baseHp: 30, baseAtk: 10, baseSpeed: 42,
+    cash: 14, coin: 0, exp: 4,
+    behavior: 'charge', weight: 22, minWave: 25,
+    special: { type: 'splitter', childId: 'splitterling', count: 2 },
+  },
+  {
+    id: 'splitterling', name: 'ディバイダー片', desc: '分裂で生まれた小型機',
+    color: '#ffbf7d', glow: 'rgba(255,191,125,0.5)', shape: 'triangle',
+    size: 8, baseHp: 8, baseAtk: 5, baseSpeed: 70,
+    cash: 3, coin: 0, exp: 1,
+    behavior: 'charge', weight: 0, minWave: 999,  // 抽選対象外（分裂専用）
+    hidden: true,  // 図鑑には独立種として出さない（親機の一部）
+  },
+  {
+    id: 'brute', name: 'ベヒモス', desc: '極めて高い耐久を持つ超大型機。ノックバックが効かない',
+    color: '#ff5c3d', glow: 'rgba(255,92,61,0.7)', shape: 'square',
+    size: 26, baseHp: 180, baseAtk: 34, baseSpeed: 20,
+    cash: 45, coin: 1, exp: 12,
+    behavior: 'charge', weight: 12, minWave: 45,
+    special: { type: 'brute', knockbackImmune: true },
+  },
+  {
+    id: 'bomber', name: 'カミカゼ', desc: 'コアへ突撃し、接触すると自爆して大ダメージを与える',
+    color: '#ff2d5c', glow: 'rgba(255,45,92,0.7)', shape: 'triangle',
+    size: 12, baseHp: 18, baseAtk: 45, baseSpeed: 82,
+    cash: 12, coin: 0, exp: 3,
+    behavior: 'charge', weight: 16, minWave: 40,
+    special: { type: 'bomber', blastRadius: 70 },
+  },
+  {
+    id: 'warper', name: 'ブリンカー', desc: '短距離のテレポートでコアへ一気に近づく',
+    color: '#c77dff', glow: 'rgba(199,125,255,0.6)', shape: 'hex',
+    size: 12, baseHp: 24, baseAtk: 16, baseSpeed: 46,
+    cash: 22, coin: 0, exp: 6,
+    behavior: 'charge', weight: 16, minWave: 55,
+    special: { type: 'warper', interval: 2.6, distance: 130, minDist: 90 },
+  },
+  {
+    id: 'leech', name: 'サイフォン', desc: '与えたダメージで自己回復し、しぶとく前進する',
+    color: '#a561ff', glow: 'rgba(165,97,255,0.6)', shape: 'hex',
+    size: 14, baseHp: 46, baseAtk: 12, baseSpeed: 36,
+    cash: 20, coin: 0, exp: 5,
+    behavior: 'charge', weight: 15, minWave: 60,
+    special: { type: 'leech', healOnHitPct: 0.5, regen: 0.015 },
+  },
+  {
     id: 'boss', name: 'コロッサス', desc: '50Wave毎に現れる超大型個体',
     color: '#ff2d95', glow: 'rgba(255,45,149,0.8)', shape: 'hex',
     size: 46, baseHp: 2600, baseAtk: 120, baseSpeed: 17,
     cash: 900, coin: 3, exp: 100,
     behavior: 'charge', boss: true, weight: 0, minWave: 50,
+    // ボスの行動パターン。Waveに応じてどれかが選ばれる（下記 BOSS_PATTERNS）
   },
 ];
+
+/**
+ * ボスの行動パターン。撃破したボスの数に応じて巡回する。
+ * この配列へ追加するだけで新しいボス挙動を増やせる。
+ */
+const BOSS_PATTERNS = [
+  {
+    id: 'laser', name: 'レーザー掃射',
+    color: '#ff2d95',
+    // 一定間隔でコアへ狙いをつけ、太いレーザーを発射する
+    interval: 4.5, telegraph: 1.2,
+    onFire(game, boss) {
+      game.fireBossLaser(boss);
+    },
+  },
+  {
+    id: 'summon', name: '増援召喚',
+    color: '#4fa8ff',
+    interval: 6.0, telegraph: 0.8,
+    onFire(game, boss) {
+      game.bossSummon(boss, 4);
+    },
+  },
+  {
+    id: 'barrier', name: '再生シールド',
+    color: '#3dff9e',
+    interval: 8.0, telegraph: 0.6,
+    onFire(game, boss) {
+      // 一定時間、被ダメージを大きく軽減するシールドを張る
+      boss.bossShieldTimer = 3.0;
+      game.spawnParticles(boss.x, boss.y, 20, 160, 0.6, 4, '#3dff9e');
+      game.showToast('ボスがシールドを展開', 1600);
+    },
+  },
+  {
+    id: 'shockwave', name: '衝撃波',
+    color: '#ffc233',
+    interval: 5.5, telegraph: 1.0,
+    onFire(game, boss) {
+      // コアを中心に広がる衝撃波。プレイヤーの攻撃を一時的に阻害する弾幕
+      game.bossShockwave(boss);
+    },
+  },
+];
+
+/** ボスが使うパターンを撃破数から決める（複数を巡回） */
+function bossPatternsFor(bossKills) {
+  // 最初のボスはレーザーのみ。ボスを2体倒すごとに使えるパターンが1つ増える
+  const count = Math.min(1 + Math.floor(bossKills / 2), BOSS_PATTERNS.length);
+  const out = [];
+  for (let i = 0; i < count; i++) out.push(BOSS_PATTERNS[i]);
+  return out;
+}
 
 /** Waveスケーリング規則 */
 const WAVE_RULES = Object.freeze({
@@ -1374,6 +1493,7 @@ const ELEMENTS = [
       for (let i = 0; i < game.enemies.length; i++) {
         const e = game.enemies[i];
         if (!e) continue;
+        if (e.knockbackImmune) continue;   // ベヒモス等は位置を動かせない
         const dx = game.cx - e.x;
         const dy = game.cy - e.y;
         const d = Math.hypot(dx, dy) || 1;
@@ -1763,7 +1883,8 @@ const ACHIEVEMENTS = [
   { id: 'upgrade1000', name: '過剰武装', desc: '強化の合計レベルを1000にする',
     coin: 60, gem: 3, check: (c) => c.upgradeLevels >= 1000 },
   { id: 'codexAll', name: '観測完了', desc: '全ての敵性体を図鑑に記録する',
-    coin: 45, gem: 3, frag: 2, check: (c) => c.discoveredCount >= ENEMY_TYPES.length },
+    coin: 45, gem: 3, frag: 2,
+    check: (c) => c.discoveredCount >= ENEMY_TYPES.filter((t) => !t.hidden).length },
   { id: 'research10', name: '研究者', desc: '研究の合計レベルを10にする',
     coin: 8, gem: 0, check: (c) => c.researchLevels >= 10 },
   { id: 'research100', name: '技術特異点', desc: '研究の合計レベルを100にする',
@@ -2437,6 +2558,17 @@ class Enemy {
     this.freezeCd = 0;       // 凍結の再発クールダウン
     this.slowMax = 0.8;      // 減速の上限（氷属性が書き換える）
     this.frozenBonus = 1;    // 凍結中の被ダメージ倍率
+    // 特殊敵・ボス用の状態
+    this.special = null;     // 特殊挙動の定義（type.special）
+    this.healTimer = 0;      // メディックの回復間隔
+    this.warpTimer = 0;      // ブリンカーのテレポート間隔
+    this.knockbackImmune = false;
+    this.bossPatterns = null;
+    this.bossPatternTimers = null;
+    this.bossTelegraph = 0;  // 予兆の残り時間
+    this.bossTelegraphColor = '#fff';
+    this.bossShieldTimer = 0;
+    this.moveAngle = 0;      // 進行方向（シールド判定用）
   }
   init(type, wave, x, y, speedMul) {
     this.type = type;
@@ -2465,6 +2597,20 @@ class Enemy {
     this.freezeCd = 0;
     this.slowMax = 0.8;
     this.frozenBonus = 1;
+
+    this.special = type.special || null;
+    this.healTimer = this.special && this.special.interval ? this.special.interval : 0;
+    this.warpTimer = this.special && this.special.interval ? this.special.interval : 0;
+    this.knockbackImmune = !!(this.special && this.special.knockbackImmune);
+    this.bossShieldTimer = 0;
+    this.bossTelegraph = 0;
+    this.moveAngle = 0;
+
+    // ボスの行動パターンを初期化
+    if (type.boss) {
+      this.bossPatterns = null;      // Game 側で設定する
+      this.bossPatternTimers = null;
+    }
   }
 
   /**
@@ -2505,7 +2651,12 @@ class Enemy {
     if (moving) {
       this.x += (dx / dist) * this.speed * slow * dt;
       this.y += (dy / dist) * this.speed * slow * dt;
+      this.moveAngle = Math.atan2(dy, dx);
     }
+
+    // 特殊挙動（データ駆動。special.type ごとに専用処理を呼ぶ）
+    if (this.special) this.updateSpecial(dt, game, dist);
+    if (this.isBoss && this.bossPatterns) this.updateBoss(dt, game, dist);
 
     if (this.hitFlash > 0) this.hitFlash -= dt;
     if (this.spawnAnim > 0) this.spawnAnim -= dt;
@@ -2520,9 +2671,85 @@ class Enemy {
     }
     if (this.freezeCd > 0) this.freezeCd -= dt;
 
+    if (this.bossShieldTimer > 0) this.bossShieldTimer -= dt;
+
     this.wobble += dt * 4;
     this.rotation += dt * (this.isBoss ? 0.4 : 1.2);
     return dist;
+  }
+
+  /** 特殊敵の毎フレーム処理 */
+  updateSpecial(dt, game, dist) {
+    const sp = this.special;
+
+    if (sp.type === 'healer') {
+      // 周囲の味方を回復する
+      this.healTimer -= dt;
+      if (this.healTimer <= 0) {
+        this.healTimer = sp.interval;
+        const rSq = sp.radius * sp.radius;
+        for (let i = 0; i < game.enemies.length; i++) {
+          const e = game.enemies[i];
+          if (!e || e === this || e.hp >= e.maxHp) continue;
+          const ex = e.x - this.x;
+          const ey = e.y - this.y;
+          if (ex * ex + ey * ey > rSq) continue;
+          e.hp = Math.min(e.hp + e.maxHp * sp.healPct, e.maxHp);
+          if (Math.random() < 0.5) {
+            game.spawnParticles(e.x, e.y, 1, 30, 0.3, 2, '#3dff9e');
+          }
+        }
+      }
+    } else if (sp.type === 'warper') {
+      // 一定間隔でコア方向へテレポート
+      this.warpTimer -= dt;
+      if (this.warpTimer <= 0 && dist > sp.minDist) {
+        this.warpTimer = sp.interval;
+        const jump = Math.min(sp.distance, dist - sp.minDist);
+        const ang = Math.atan2(game.cy - this.y, game.cx - this.x);
+        game.spawnParticles(this.x, this.y, 8, 120, 0.4, 3, '#c77dff');
+        this.x += Math.cos(ang) * jump;
+        this.y += Math.sin(ang) * jump;
+        game.spawnParticles(this.x, this.y, 8, 120, 0.4, 3, '#c77dff');
+      }
+    }
+    // shield / brute / bomber / splitter / leech は
+    // ダメージ処理側（Game）で参照するのでここでは何もしない
+  }
+
+  /** シールダーの被ダメージ軽減率（正面から当たったときのみ） */
+  shieldReductionFor(px, py) {
+    if (!this.special || this.special.type !== 'shield') return 0;
+    if (this.stunTimer > 0) return 0;   // スタン中は無防備
+    // 弾の飛来方向とシールドの向き（進行方向）を比較する
+    const incoming = Math.atan2(py - this.y, px - this.x);
+    let diff = Math.abs(incoming - this.moveAngle);
+    while (diff > Math.PI) diff = TAU - diff;
+    // 正面（進行方向＝コア方向）から来た弾を防ぐ
+    return diff < this.special.angle ? this.special.reduction : 0;
+  }
+
+  /** ボスの行動パターン処理 */
+  updateBoss(dt, game, dist) {
+    for (let i = 0; i < this.bossPatterns.length; i++) {
+      const pat = this.bossPatterns[i];
+      this.bossPatternTimers[i] -= dt;
+
+      // 予兆フェーズ突入
+      if (this.bossPatternTimers[i] <= pat.telegraph && this.bossTelegraph <= 0 &&
+          this.bossPatternTimers[i] > 0 && !this._telegraphing) {
+        this._telegraphing = pat;
+        this.bossTelegraph = pat.telegraph;
+        this.bossTelegraphColor = pat.color;
+      }
+
+      if (this.bossPatternTimers[i] <= 0) {
+        this.bossPatternTimers[i] = pat.interval;
+        this._telegraphing = null;
+        pat.onFire(game, this);
+      }
+    }
+    if (this.bossTelegraph > 0) this.bossTelegraph -= dt;
   }
 }
 
@@ -2578,17 +2805,32 @@ class EnemyProjectile {
     this.damage = 0;
     this.life = 0;
     this.color = '#a561ff';
+    this.isLaser = false;
+    this.radius = 5;
   }
+  /** 目標座標へ向かう弾（遠距離敵の通常弾） */
   init(x, y, cx, cy, damage, color) {
     this.x = x; this.y = y;
     this.damage = damage;
-    this.color = color;
+    this.color = color || '#a561ff';
     this.life = 6;
+    this.isLaser = false;
+    this.radius = 5;
     const dx = cx - x;
     const dy = cy - y;
     const d = Math.hypot(dx, dy) || 1;
     this.vx = (dx / d) * CONFIG.ENEMY_PROJECTILE_SPEED;
     this.vy = (dy / d) * CONFIG.ENEMY_PROJECTILE_SPEED;
+  }
+  /** 速度ベクトルを直接指定する弾（ボスAI用） */
+  initVel(x, y, vx, vy, damage, color) {
+    this.x = x; this.y = y;
+    this.vx = vx; this.vy = vy;
+    this.damage = damage;
+    this.color = color || '#ff2d95';
+    this.life = 6;
+    this.isLaser = false;
+    this.radius = 5;
   }
   update(dt) {
     this.x += this.vx * dt;
@@ -3158,6 +3400,7 @@ class WaveManager {
 
     const e = g.enemyPool.acquire();
     e.init(type, this.wave, pt.x, pt.y, g.player.stats.enemySpeedMul);
+    g.setupBoss(e);   // 行動パターンを設定
     g.enemies.push(e);
     g.currentBoss = e;
     g.discoverEnemy(type.id);
@@ -3554,6 +3797,7 @@ class Codex {
 
     for (let i = 0; i < ENEMY_TYPES.length; i++) {
       const t = ENEMY_TYPES[i];
+      if (t.hidden) continue;   // 分裂片などの内部専用種は表示しない
       const found = g.discovered.has(t.id);
       const kills = g.killsByType[t.id] || 0;
 
@@ -6245,8 +6489,10 @@ class Game {
         const d2 = dx * dx + dy * dy;
         if (d2 > rSq) continue;
         const d = Math.sqrt(d2) || 1;
-        e.x += (dx / d) * 220 * dt;
-        e.y += (dy / d) * 220 * dt;
+        if (!e.knockbackImmune) {
+          e.x += (dx / d) * 220 * dt;
+          e.y += (dy / d) * 220 * dt;
+        }
         this.damageEnemy(e, b.damage * dt, 0, false);
       }
 
@@ -6294,7 +6540,12 @@ class Game {
 
     for (let i = this.enemies.length - 1; i >= 0; i--) {
       const e = this.enemies[i];
-      if (!e || e.burnTimer <= 0) continue;
+      if (!e) continue;
+      // サイフォンは毎秒わずかに自己回復する
+      if (e.special && e.special.type === 'leech' && e.hp > 0 && e.hp < e.maxHp) {
+        e.hp = Math.min(e.hp + e.maxHp * e.special.regen * step, e.maxHp);
+      }
+      if (e.burnTimer <= 0) continue;
       e.burnTimer -= step;
       this.damageEnemy(e, e.burnDps * step, 0, false);
       if (Math.random() < 0.3) {
@@ -6812,6 +7063,23 @@ class Game {
       if (dist <= barrier + e.size) {
         // 壁の反射ダメージや属性の連鎖爆発でこの敵自身が倒される場合があるため、
         // ダメージ処理のあとに改めて配列の位置を取り直す。
+        // カミカゼ: コア接触で自爆し、通常より大きなダメージと範囲爆発
+        if (e.special && e.special.type === 'bomber') {
+          this.player.takeDamage(e.atk, e);
+          this.explode(e.x, e.y, e.special.blastRadius, 0, '#ff2d5c');
+          this.spawnParticles(e.x, e.y, 22, 260, 0.5, 4, '#ff2d5c');
+          this.shakeScreen(7);
+          this.flashScreen(0.14, '#ff2d5c');
+          this.sfx.explosion();
+          const bidx = this.enemies.indexOf(e);
+          if (bidx !== -1) {
+            this.waveManager.killed++;
+            this.enemyPool.release(swapRemove(this.enemies, bidx));
+          }
+          if (i > this.enemies.length) i = this.enemies.length;
+          continue;
+        }
+
         this.player.takeDamage(e.atk, e);
         this.spawnParticles(e.x, e.y, 8, 140, 0.3, 3, e.type.color);
         this.sfx.explosion();
@@ -6854,7 +7122,9 @@ class Game {
       const dy = p.y - this.cy;
       let dead = p.life <= 0;
 
-      if (!dead && dx * dx + dy * dy <= barrier * barrier) {
+      // 太いボス弾（レーザー等）は弾半径ぶんだけ接触判定を広げる
+      const hitR = barrier + (p.radius || 5);
+      if (!dead && dx * dx + dy * dy <= hitR * hitR) {
         this.player.takeDamage(p.damage, null);
         this.spawnParticles(p.x, p.y, 6, 120, 0.25, 2.6, p.color);
         this.sfx.hit();
@@ -6921,6 +7191,20 @@ class Game {
     if (s.armorBreakChance > 0 && Math.random() < s.armorBreakChance) {
       enemy.dmgTakenMul = s.armorBreakMultiplier;
       enemy.armorBreakTimer = CONFIG.ARMOR_BREAK_DURATION;
+    }
+
+    // シールダー: 正面から当たった弾はダメージが軽減される
+    const reduction = enemy.shieldReductionFor(projectile.px, projectile.py);
+    if (reduction > 0) {
+      dmg *= 1 - reduction;
+      // シールドで弾かれた表現
+      this.spawnParticles(projectile.x, projectile.y, 3, 90, 0.2, 2, '#4fa8ff');
+    }
+
+    // サイフォン: ダメージを受けると一部を自己回復する
+    if (enemy.special && enemy.special.type === 'leech' && enemy.hp > 0) {
+      const heal = dmg * enemy.special.healOnHitPct;
+      enemy.hp = Math.min(enemy.hp + heal, enemy.maxHp);
     }
 
     this.damageEnemy(enemy, dmg, projectile.critTier, true);
@@ -6997,6 +7281,8 @@ class Game {
     // 凍結中の敵は追加ダメージを受ける（氷Lv5）
     if (enemy.stunTimer > 0 && enemy.frozenBonus > 1) dmg *= enemy.frozenBonus;
     if (enemy.isBoss) dmg *= this.player.stats.bossDamageMul;
+    // ボスの再生シールド発動中は被ダメージを大幅に軽減
+    if (enemy.bossShieldTimer > 0) dmg *= 0.15;
     enemy.hp -= dmg;
     enemy.hitFlash = 0.08;
     this.dpsAccum += dmg;
@@ -7061,9 +7347,100 @@ class Game {
       if (s.packageChance > 0 && Math.random() < s.packageChance) {
         this.spawnPackage(enemy.x, enemy.y, enemy.cash * 2);
       }
+      // ディバイダー: 撃破時に子機へ分裂する
+      if (enemy.special && enemy.special.type === 'splitter') {
+        this.splitEnemy(enemy);
+      }
+      // カミカゼ: 撃破時（＝コア接触前でも）小さく爆発
+      if (enemy.special && enemy.special.type === 'bomber') {
+        this.spawnParticles(enemy.x, enemy.y, 14, 220, 0.4, 3.4, '#ff2d5c');
+      }
     }
 
     this.enemyPool.release(swapRemove(this.enemies, idx));
+  }
+
+  /** ディバイダーを子機へ分裂させる */
+  splitEnemy(parent) {
+    const sp = parent.special;
+    const childType = ENEMY_TYPES.find((t) => t.id === sp.childId);
+    if (!childType) return;
+
+    for (let i = 0; i < sp.count; i++) {
+      const ang = (i / sp.count) * TAU + Math.random();
+      const child = this.enemyPool.acquire();
+      child.init(childType, this.waveManager.wave, parent.x, parent.y, 1);
+      // 中央HPを引き継がず子機の基礎HPで出す。少し外側へ散らす
+      child.x = parent.x + Math.cos(ang) * 18;
+      child.y = parent.y + Math.sin(ang) * 18;
+      this.enemies.push(child);
+    }
+    this.spawnParticles(parent.x, parent.y, 10, 160, 0.35, 3, parent.type.color);
+  }
+
+  /* ---------- ボス専用AI ---------- */
+
+  /** ボスの行動パターンを設定する（出現時に呼ぶ） */
+  setupBoss(boss) {
+    const patterns = bossPatternsFor(this.meta.bossKills);
+    boss.bossPatterns = patterns;
+    boss.bossPatternTimers = patterns.map((p, i) => p.interval * (0.6 + i * 0.3));
+    boss._telegraphing = null;
+  }
+
+  /** ボスのレーザー掃射: コア方向へ太い貫通弾を放つ */
+  fireBossLaser(boss) {
+    const ang = Math.atan2(this.cy - boss.y, this.cx - boss.x);
+    const speed = 340;
+    // 3連の弾で太いレーザーを表現
+    for (let i = -1; i <= 1; i++) {
+      const a = ang + i * 0.05;
+      const p = this.enemyProjectilePool.acquire();
+      p.initVel(boss.x, boss.y, Math.cos(a) * speed, Math.sin(a) * speed, boss.atk * 0.8, '#ff2d95');
+      p.isLaser = true;
+      p.radius = 8;
+      this.enemyProjectiles.push(p);
+    }
+    this.sfx.overheat();
+    this.flashScreen(0.12, '#ff2d95');
+  }
+
+  /** ボスの増援召喚 */
+  bossSummon(boss, count) {
+    const pool = ENEMY_TYPES.filter(
+      (t) => !t.boss && t.weight > 0 && t.minWave <= this.waveManager.wave
+    );
+    if (pool.length === 0) return;
+    for (let i = 0; i < count; i++) {
+      const type = pool[Math.floor(Math.random() * pool.length)];
+      const ang = Math.random() * TAU;
+      const e = this.enemyPool.acquire();
+      e.init(type, this.waveManager.wave, boss.x + Math.cos(ang) * 40,
+        boss.y + Math.sin(ang) * 40, 1);
+      this.enemies.push(e);
+      // 召喚された敵は enemies.length のクリア判定に含まれるため、
+      // 別途カウンタを操作する必要はない（倒すまでWaveは終わらない）
+    }
+    this.spawnParticles(boss.x, boss.y, 16, 180, 0.5, 4, '#4fa8ff');
+    this.sfx.package_();
+  }
+
+  /** ボスの衝撃波: コアを取り囲む弾をばら撒く */
+  bossShockwave(boss) {
+    const count = 16;
+    const speed = 220;
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * TAU;
+      const p = this.enemyProjectilePool.acquire();
+      // コアの外周から内向きに撃つ
+      const r = 260;
+      const sx = this.cx + Math.cos(a) * r;
+      const sy = this.cy + Math.sin(a) * r;
+      p.initVel(sx, sy, -Math.cos(a) * speed, -Math.sin(a) * speed, boss.atk * 0.5, '#ffc233');
+      this.enemyProjectiles.push(p);
+    }
+    this.shakeScreen(8);
+    this.sfx.explosion();
   }
 
   discoverEnemy(id) {
@@ -7560,6 +7937,66 @@ class Game {
         ctx.fill();
       }
 
+      // シールダー: 進行方向側のバリアを弧で描く
+      if (e.special && e.special.type === 'shield' && e.stunTimer <= 0) {
+        ctx.strokeStyle = 'rgba(79, 168, 255, 0.85)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 5, e.moveAngle - e.special.angle,
+          e.moveAngle + e.special.angle);
+        ctx.stroke();
+      }
+
+      // ベヒモス: 重量感のある外周リング
+      if (e.special && e.special.type === 'brute') {
+        ctx.strokeStyle = 'rgba(255, 92, 61, 0.6)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 4, 0, TAU);
+        ctx.stroke();
+      }
+
+      // メディック: 回復範囲を淡いリングで示す
+      if (e.special && e.special.type === 'healer') {
+        ctx.strokeStyle = 'rgba(61, 255, 158, 0.18)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(e.x, y, e.special.radius, 0, TAU);
+        ctx.stroke();
+      }
+
+      // サイフォン: 回復オーラ
+      if (e.special && e.special.type === 'leech') {
+        ctx.strokeStyle = 'rgba(165, 97, 255, 0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([2, 4]);
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 4, 0, TAU);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // ボスのシールド展開中は全身をリングで覆う
+      if (e.isBoss && e.bossShieldTimer > 0) {
+        ctx.strokeStyle = 'rgba(61, 255, 158, 0.7)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 14 + Math.sin(e.wobble * 2) * 3, 0, TAU);
+        ctx.stroke();
+      }
+
+      // ボスの攻撃予兆: 発動前に色付きリングで警告する
+      if (e.isBoss && e.bossTelegraph > 0) {
+        const tt = e.bossTelegraph;
+        ctx.strokeStyle = e.bossTelegraphColor;
+        ctx.globalAlpha = 0.4 + Math.sin(tt * 18) * 0.3;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(e.x, y, size + 20, 0, TAU);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+
       // アーマーブレイク表示
       if (e.armorBreakTimer > 0) {
         ctx.strokeStyle = 'rgba(255, 194, 51, 0.85)';
@@ -7589,11 +8026,22 @@ class Game {
     for (let i = 0; i < this.enemyProjectiles.length; i++) {
       const p = this.enemyProjectiles[i];
       ctx.shadowColor = p.color;
-      ctx.shadowBlur = 10;
+      ctx.shadowBlur = p.isLaser ? 16 : 10;
       ctx.fillStyle = p.color;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, 5, 0, TAU);
+      ctx.arc(p.x, p.y, p.radius || 5, 0, TAU);
       ctx.fill();
+      // レーザーは尾を引く
+      if (p.isLaser) {
+        ctx.strokeStyle = p.color;
+        ctx.lineWidth = (p.radius || 8);
+        ctx.globalAlpha = 0.35;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x - p.vx * 0.04, p.y - p.vy * 0.04);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
     }
     ctx.shadowBlur = 0;
   }
