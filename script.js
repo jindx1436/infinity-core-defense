@@ -157,6 +157,17 @@ const BASE_STATS = Object.freeze({
   superOverclock: 0,          // 1 で SUPER OVERCLOCK が解放される
   // 属性コア（第8段階）
   elementPower: 1,            // 属性効果の倍率
+  // AIドローン（Phase 5-B）: 研究/LAB/ドローンから操作する共有ステータス
+  droneDamageMul: 1,          // 攻撃OSの与ダメージ倍率
+  droneAspdMul: 1,            // 攻撃OSの攻撃速度倍率
+  droneRangeBonus: 0,         // 攻撃OSの射程加算
+  droneCritChance: 0,         // 攻撃OSのクリティカル率加算
+  droneOsMul: 1,              // 全OS効果の倍率
+  droneEfficiency: 1,         // 効率（回復間隔短縮などに使用）
+  droneMastery: 0,            // 熟練度（全OSへ僅かに上乗せ）
+  droneSlotBonus: 0,          // 研究/LABによるスロット解放数
+  quantumFindMul: 0,          // 量子コア獲得倍率（経済OS等で上昇）
+  eliteDamageMul: 1,          // エリート/ボス級への与ダメージ倍率
 });
 
 /* =========================================================
@@ -1006,6 +1017,49 @@ const RESEARCH = [
     effect(s, lv) { s.packageChance += lv * 0.002; s.packageHeal += lv * 0.004; },
     valueText: (lv) => 'ドロップ +' + (lv * 0.2).toFixed(1) + '%',
   },
+  /* ---- AIドローン（Phase 5-B） ---- */
+  {
+    id: 'droneDamage', name: 'ドローン攻撃力', tier: 2, level: 0, maxLevel: 100,
+    baseCost: 10, growth: 1.20, description: '攻撃OSの与ダメージが増加',
+    effect(s, lv) { s.droneDamageMul += lv * 0.04; },
+    valueText: (lv) => 'ドローン攻撃力 +' + (lv * 4) + '%',
+  },
+  {
+    id: 'droneAspd', name: 'ドローン攻撃速度', tier: 2, level: 0, maxLevel: 50,
+    baseCost: 14, growth: 1.22, description: '攻撃OSの攻撃速度が上昇',
+    effect(s, lv) { s.droneAspdMul += lv * 0.03; },
+    valueText: (lv) => 'ドローン攻撃速度 +' + (lv * 3) + '%',
+  },
+  {
+    id: 'droneOsMul', name: 'OS効果倍率', tier: 2, level: 0, maxLevel: 60,
+    baseCost: 16, growth: 1.23, description: '全OSの効果が上昇',
+    effect(s, lv) { s.droneOsMul += lv * 0.03; },
+    valueText: (lv) => 'OS効果 +' + (lv * 3) + '%',
+  },
+  {
+    id: 'droneCrit', name: 'ドローン精密射撃', tier: 3, level: 0, maxLevel: 25,
+    baseCost: 30, growth: 1.28, description: '攻撃OSのクリティカル率が上昇',
+    effect(s, lv) { s.droneCritChance += lv * 0.02; },
+    valueText: (lv) => 'ドローンクリ率 +' + (lv * 2) + '%',
+  },
+  {
+    id: 'droneEfficiency', name: 'ドローン効率', tier: 3, level: 0, maxLevel: 40,
+    baseCost: 20, growth: 1.24, description: '修復OSの回復間隔などが改善',
+    effect(s, lv) { s.droneEfficiency += lv * 0.05; },
+    valueText: (lv) => '効率 +' + (lv * 5) + '%',
+  },
+  {
+    id: 'droneMastery', name: 'ドローン熟練度', tier: 4, level: 0, maxLevel: 50,
+    baseCost: 40, growth: 1.26, description: '全OSへ僅かに上乗せ',
+    effect(s, lv) { s.droneMastery += lv * 0.02; },
+    valueText: (lv) => '全OS +' + (lv * 2) + '%',
+  },
+  {
+    id: 'droneSlot', name: 'ドローンスロット解放', tier: 3, level: 0, maxLevel: 3,
+    baseCost: 200, growth: 3.0, description: '装備できるドローンが1機増える',
+    effect(s, lv) { s.droneSlotBonus += lv; },
+    valueText: (lv) => 'スロット +' + lv,
+  },
 ];
 
 /* ---------------------------------------------------------
@@ -1179,6 +1233,61 @@ const LAB_RESEARCH = [
     description: 'Gem獲得量が増加する',
     effect(s, lv) { s.gemFindMul += lv * 0.1; },
     valueText: (lv) => 'Gem +' + (lv * 10) + '%',
+  },
+  /* ---- AIドローン（Phase 5-B） ---- */
+  {
+    id: 'labDroneAi', name: 'AI最適化', category: 'special', tier: 2,
+    level: 0, maxLevel: 40,
+    baseCost: 80, costGrowth: 1.30,
+    baseDuration: 240, durationGrowth: 1.24,
+    description: '全OSの効果倍率が上昇する',
+    effect(s, lv) { s.droneOsMul += lv * 0.03; },
+    valueText: (lv) => 'OS効果 +' + (lv * 3) + '%',
+  },
+  {
+    id: 'labDroneBattery', name: '高性能バッテリー', category: 'special', tier: 2,
+    level: 0, maxLevel: 30,
+    baseCost: 90, costGrowth: 1.30,
+    baseDuration: 300, durationGrowth: 1.24,
+    description: 'ドローン効率が上昇する',
+    effect(s, lv) { s.droneEfficiency += lv * 0.05; },
+    valueText: (lv) => '効率 +' + (lv * 5) + '%',
+  },
+  {
+    id: 'labDroneProc', name: '高性能プロセッサ', category: 'special', tier: 3,
+    level: 0, maxLevel: 30,
+    baseCost: 120, costGrowth: 1.32,
+    baseDuration: 360, durationGrowth: 1.26,
+    description: 'ドローン攻撃速度が上昇する',
+    effect(s, lv) { s.droneAspdMul += lv * 0.03; },
+    valueText: (lv) => 'ドローン攻撃速度 +' + (lv * 3) + '%',
+  },
+  {
+    id: 'labDroneCool', name: '冷却システム', category: 'special', tier: 3,
+    level: 0, maxLevel: 25,
+    baseCost: 130, costGrowth: 1.32,
+    baseDuration: 420, durationGrowth: 1.26,
+    description: 'ドローン攻撃力が上昇する',
+    effect(s, lv) { s.droneDamageMul += lv * 0.04; },
+    valueText: (lv) => 'ドローン攻撃力 +' + (lv * 4) + '%',
+  },
+  {
+    id: 'labDroneComm', name: '通信強化', category: 'special', tier: 3,
+    level: 0, maxLevel: 30,
+    baseCost: 110, costGrowth: 1.30,
+    baseDuration: 360, durationGrowth: 1.24,
+    description: '攻撃OSの射程が拡大する',
+    effect(s, lv) { s.droneRangeBonus += lv * 4; },
+    valueText: (lv) => 'ドローン射程 +' + (lv * 4),
+  },
+  {
+    id: 'labDroneQuantum', name: '量子リンク', category: 'special', tier: 4,
+    level: 0, maxLevel: 20,
+    baseCost: 220, costGrowth: 1.38,
+    baseDuration: 720, durationGrowth: 1.30,
+    description: '量子コア獲得倍率が上昇する',
+    effect(s, lv) { s.quantumFindMul += lv * 0.08; },
+    valueText: (lv) => '量子コア +' + (lv * 8) + '%',
   },
 ];
 
@@ -1753,6 +1862,247 @@ function rarityIndex(id) {
   return 0;
 }
 
+/* =========================================================
+ * AIドローンシステム（Phase 5-B）
+ * データは全て配列管理。将来 本体50種/OS20種/モジュール100種 を
+ * 追加できるよう、id で参照する疎結合な構造にしている。
+ * バランス方針: ドローンは「プレイヤーの不足を補う」補助。
+ * 単体で攻略が成立しないよう倍率は控えめに設定している。
+ * ======================================================= */
+
+/**
+ * ドローン本体のレアリティ階梯。本体の差はレアリティのみ。
+ * mul   : OS性能倍率（全OS共通）
+ * slots : モジュール装備枠
+ * dust  : 解体で得られる量子コア
+ * fuse  : 1段階上へ合成するのに必要な量子コア（null = これ以上合成不可）
+ * gacha : false のものはガチャから排出されず、合成でのみ入手できる
+ */
+const DRONE_RARITIES = [
+  { id: 'common',      name: 'Common',    icon: '◇', color: '#9fb4c7', mul: 1.00, slots: 1, dust: 1,   fuse: 5,    gacha: true },
+  { id: 'rare',        name: 'Rare',      icon: '◈', color: '#4fa8ff', mul: 1.15, slots: 2, dust: 3,   fuse: 12,   gacha: true },
+  { id: 'epic',        name: 'Epic',      icon: '⬢', color: '#a561ff', mul: 1.35, slots: 2, dust: 8,   fuse: 30,   gacha: true },
+  { id: 'legend',      name: 'Legend',    icon: '✦', color: '#ffc233', mul: 1.60, slots: 3, dust: 20,  fuse: 70,   gacha: true },
+  { id: 'mythic',      name: 'Mythic',    icon: '✧', color: '#ff2d95', mul: 1.90, slots: 3, dust: 45,  fuse: 150,  gacha: true },
+  { id: 'unique',      name: 'Unique',    icon: '★', color: '#3dff9e', mul: 2.30, slots: 4, dust: 100, fuse: 350,  gacha: true },
+  { id: 'unique_plus', name: 'Unique+',   icon: '✪', color: '#7dffd4', mul: 2.80, slots: 4, dust: 220, fuse: 800,  gacha: false },
+  { id: 'oc_unique',   name: 'OC Unique', icon: '⯁', color: '#ff7a3d', mul: 3.50, slots: 5, dust: 500, fuse: null, gacha: false },
+];
+
+/** 合成に必要な同レアリティのドローン数 */
+const DRONE_FUSION_COUNT = 3;
+
+function droneRarityDef(id) {
+  for (let i = 0; i < DRONE_RARITIES.length; i++) {
+    if (DRONE_RARITIES[i].id === id) return DRONE_RARITIES[i];
+  }
+  return DRONE_RARITIES[0];
+}
+function droneRarityIndex(id) {
+  for (let i = 0; i < DRONE_RARITIES.length; i++) {
+    if (DRONE_RARITIES[i].id === id) return i;
+  }
+  return 0;
+}
+/** レアリティ別のOS性能倍率（モジュールのレアリティにも流用する） */
+function droneRarityMul(id) {
+  return droneRarityDef(id).mul;
+}
+/** 本体のモジュール装備枠（レアリティで決まる） */
+function droneModuleSlots(rarity) {
+  return droneRarityDef(rarity).slots;
+}
+/** 合成先のレアリティ（これ以上上がらない場合は null） */
+function droneNextRarity(id) {
+  const i = droneRarityIndex(id);
+  return i < DRONE_RARITIES.length - 1 ? DRONE_RARITIES[i + 1].id : null;
+}
+
+/**
+ * OS（役割）。role が 'attack' のものだけが実際に攻撃する。
+ * それ以外はプレイヤーへの常時効果（applyPassive でステータスへ加算）。
+ * combat は攻撃OS専用（level から戦闘パラメータを生成）。
+ */
+const DRONE_OS = [
+  {
+    id: 'os_attack', name: '攻撃OS', role: 'attack', icon: '⚔', color: '#ff3b6b',
+    tagline: '唯一攻撃を行うOS',
+    desc: 'ドローンが敵へレーザー攻撃。Lvで攻撃力・攻撃速度・射程が上昇。属性で挙動が変化する。',
+    // 攻撃OSの戦闘パラメータ（本体AI倍率やレア倍率は呼び出し側で乗算）
+    combat(level, s) {
+      const lf = droneLevelFactor(level);
+      return {
+        damage: 6 * lf,
+        interval: 1.05 / (1 + (level - 1) * 0.03),
+        range: 150 + (level - 1) * 3,
+        crit: 0.03,
+      };
+    },
+    levelText: (lv) => '攻撃力/攻撃速度/射程 上昇',
+  },
+  {
+    id: 'os_support', name: '支援OS', role: 'support', icon: '✚', color: '#3dff9e',
+    tagline: 'プレイヤーを常時強化',
+    desc: '攻撃せず、プレイヤーの攻撃速度・攻撃力・クリティカル率を上げる。',
+    applyPassive(s, k) {
+      s.attackInterval = s.attackInterval / (1 + 0.06 * k);
+      s.damageMul += 0.05 * k;
+      s.critChance += 0.02 * k;
+    },
+    levelText: (lv) => 'Pの攻撃速度/攻撃力/クリ率 上昇',
+  },
+  {
+    id: 'os_repair', name: '修復OS', role: 'repair', icon: '❤', color: '#ff6b8f',
+    tagline: '継続回復',
+    desc: '攻撃せず、一定間隔でHPを回復。Lvで回復量・間隔・緊急修復が強化。',
+    applyPassive(s, k) {
+      s.hpRegen += 1.6 * k;                 // 常時の微回復
+      s._droneRepair = (s._droneRepair || 0) + k;   // 間隔バースト回復の規模
+    },
+    levelText: (lv) => 'HP回復量/間隔/緊急修復 上昇',
+  },
+  {
+    id: 'os_analysis', name: '解析OS', role: 'analysis', icon: '◎', color: '#7fd8ff',
+    tagline: '敵を解析して弱点を突く',
+    desc: '攻撃せず、ボス/エリートへの与ダメージとクリティカル率を強化（射程・索敵は強化しない）。',
+    applyPassive(s, k) {
+      s.bossDamageMul += 0.08 * k;
+      s.eliteDamageMul += 0.08 * k;
+      s.critChance += 0.03 * k;
+    },
+    levelText: (lv) => 'ボス/エリート与ダメ・クリ率 上昇',
+  },
+  {
+    id: 'os_economy', name: '経済OS', role: 'economy', icon: '$', color: '#ffc233',
+    tagline: '経済支援専門',
+    desc: '攻撃せず、Coin/Cash/量子コア/Gem獲得を強化（Gemは上限あり）。',
+    applyPassive(s, k, ctx) {
+      let coin = 0.08 * k;
+      if (ctx && ctx.element === 'economy') coin += 0.04 * k;  // 経済属性シナジー
+      s.coinBonus += coin;
+      s.cashBonus += 0.12 * k;
+      s.quantumFindMul += 0.06 * k;
+      s.gemFindMul += Math.min(0.03 * k, 0.30);               // Gemは控えめ＆上限
+    },
+    levelText: (lv) => 'Coin/Cash/量子コア/Gem 上昇',
+  },
+];
+function droneOsById(id) {
+  for (let i = 0; i < DRONE_OS.length; i++) if (DRONE_OS[i].id === id) return DRONE_OS[i];
+  return null;
+}
+
+/**
+ * ドローンモジュール。slot は装備制限用のタグ（今は 'any'）。
+ * combat は攻撃OSの戦闘値を補正、passive はプレイヤー/ドローンOS効果を補正。
+ */
+const DRONE_MODULES = [
+  { id: 'dm_laser', name: 'レーザーユニット', slot: 'attack', color: '#ff3b6b',
+    desc: '攻撃OSの攻撃力上昇', combat(c, p) { c.damage *= 1 + 0.18 * p; } },
+  { id: 'dm_accel', name: '高速演算装置', slot: 'attack', color: '#ff7a3d',
+    desc: '攻撃OSの攻撃速度上昇', combat(c, p) { c.interval /= 1 + 0.12 * p; } },
+  { id: 'dm_sensor', name: '高性能センサー', slot: 'attack', color: '#7fd8ff',
+    desc: '攻撃OSの射程とクリ率上昇', combat(c, p) { c.range += 40 * p; c.crit += 0.05 * p; } },
+  { id: 'dm_repair', name: '修復ユニット', slot: 'support', color: '#ff6b8f',
+    desc: 'HP自動回復を付与', passive(s, p) { s.hpRegen += 2.2 * p; } },
+  { id: 'dm_amp', name: '出力増幅器', slot: 'support', color: '#3dff9e',
+    desc: 'プレイヤー攻撃力を上昇', passive(s, p) { s.damageMul += 0.04 * p; } },
+  { id: 'dm_battery', name: '量子バッテリー', slot: 'economy', color: '#ffc233',
+    desc: 'Coin獲得を上昇', passive(s, p) { s.coinBonus += 0.06 * p; } },
+  { id: 'dm_shield', name: 'シールド発生装置', slot: 'util', color: '#00e5ff',
+    desc: '防御力と最大HPを上昇', passive(s, p) { s.defense += 8 * p; s.hpMul += 0.04 * p; } },
+  { id: 'dm_proc', name: '高性能プロセッサ', slot: 'util', color: '#a561ff',
+    desc: 'クリティカル率を上昇', passive(s, p) { s.critChance += 0.02 * p; } },
+  { id: 'dm_link', name: '量子リンク', slot: 'economy', color: '#3dff9e',
+    desc: '量子コア獲得を上昇', passive(s, p) { s.quantumFindMul += 0.10 * p; } },
+  { id: 'dm_targeter', name: '照準補正器', slot: 'attack', color: '#ffe14d',
+    desc: '攻撃OSのクリ率上昇', combat(c, p) { c.crit += 0.06 * p; } },
+];
+function droneModuleById(id) {
+  for (let i = 0; i < DRONE_MODULES.length; i++) if (DRONE_MODULES[i].id === id) return DRONE_MODULES[i];
+  return null;
+}
+
+/** Lvによる効果倍率（Lv1=1.0, Lv20≈2.7）。経験値制は使わない。 */
+function droneLevelFactor(level) {
+  return 1 + (Math.max(1, level) - 1) * 0.09;
+}
+const DRONE_MAX_LEVEL = 20;
+const DRONE_SLOT_MAX = 4;
+
+/** Lvアップ費用（Coin と 量子コア） */
+function droneLevelUpCost(level) {
+  return {
+    coin: Math.floor(40 * Math.pow(1.28, level - 1)),
+    quantum: Math.max(1, Math.floor(level / 4) + 1),
+  };
+}
+
+let _droneUid = 1;
+function createDroneInstance(rarity, os) {
+  return {
+    uid: 'dr_' + (Date.now().toString(36)) + '_' + (_droneUid++),
+    rarity: rarity || 'common',
+    level: 1,
+    os: os || 'os_attack',
+    modules: [],    // 装備中ドローンモジュールの uid 配列
+    locked: false,  // ロック中は合成・解体の対象外
+  };
+}
+function createDroneModuleInstance(bpId, rarity) {
+  return { uid: 'dmi_' + (Date.now().toString(36)) + '_' + (_droneUid++), bp: bpId, rarity: rarity || 'common' };
+}
+
+/**
+ * 旧セーブ（本体タイプ制）からの移行。
+ * bodyId しか持たないドローンへ既定値を補い、欠損フィールドを埋める。
+ */
+function migrateDroneInstance(d) {
+  if (!d) return d;
+  if (d.bodyId !== undefined) delete d.bodyId;
+  if (!d.rarity || !DRONE_RARITIES.some((r) => r.id === d.rarity)) d.rarity = 'common';
+  if (typeof d.level !== 'number' || d.level < 1) d.level = 1;
+  if (!d.os) d.os = 'os_attack';
+  if (!Array.isArray(d.modules)) d.modules = [];
+  if (typeof d.locked !== 'boolean') d.locked = false;
+  return d;
+}
+
+/** OSの実効スケール k（レア×Lv×研究×熟練×オーバークロック） */
+function droneOsScale(drone, s, oc) {
+  const os = droneOsById(drone.os);
+  const mastery = 1 + (s.droneMastery || 0);
+  const ocMul = (oc && os && os.role !== 'attack') ? 1.5 : 1;
+  return droneRarityMul(drone.rarity) * droneLevelFactor(drone.level)
+    * (s.droneOsMul || 1) * mastery * ocMul;
+}
+
+/**
+ * 装備中ドローンの「常時効果OS」とモジュールの passive をステータスへ反映。
+ * droneModuleInv は uid→インスタンスの参照解決に使う。
+ */
+function applyDroneStatsToPlayer(s, drones, droneModuleInv, elementId, oc) {
+  if (!drones || !drones.length) return;
+  for (let i = 0; i < drones.length; i++) {
+    const d = drones[i];
+    if (!d) continue;
+    const os = droneOsById(d.os);
+    const k = droneOsScale(d, s, oc);
+    if (os && os.role !== 'attack' && os.applyPassive) {
+      os.applyPassive(s, k, { element: elementId });
+    }
+    // 装備モジュールの passive
+    if (d.modules && droneModuleInv) {
+      for (let j = 0; j < d.modules.length; j++) {
+        const inst = droneModuleInv[d.modules[j]];
+        if (!inst) continue;
+        const bp = droneModuleById(inst.bp);
+        if (bp && bp.passive) bp.passive(s, droneRarityMul(inst.rarity) * (s.droneOsMul || 1));
+      }
+    }
+  }
+}
+
 /** モジュールの装備枠。種類ごとに1つずつ装備できる */
 const MODULE_TYPES = [
   { id: 'attack', label: '攻撃', color: '#ff3b6b' },
@@ -1947,8 +2297,10 @@ const GACHA_MULTI_COST = 900;
  * weight は種別間の比率。
  */
 const GACHA_KINDS = [
-  { kind: 'module', weight: 88 },
-  { kind: 'skin', weight: 12 },
+  { kind: 'module', weight: 66 },
+  { kind: 'skin', weight: 8 },
+  { kind: 'droneModule', weight: 14 },  // ドローン用モジュール
+  { kind: 'drone', weight: 12 },        // ドローン本体（合成限定レアは排出しない）
 ];
 
 /**
@@ -2089,7 +2441,7 @@ function createModule(blueprint, rarity) {
 }
 
 /** BASE_STATS へ永続研究とLAB研究の効果を適用した値を返す（周回開始時の土台） */
-function computeResearchStats(equippedModules, elementId, elementState) {
+function computeResearchStats(equippedModules, elementId, elementState, drones, droneModuleInv, droneOC) {
   const s = Object.assign({}, BASE_STATS);
   for (let i = 0; i < RESEARCH.length; i++) {
     const r = RESEARCH[i];
@@ -2114,6 +2466,8 @@ function computeResearchStats(equippedModules, elementId, elementState) {
       el.stats(s, s.elementPower, P);
     }
   }
+  // AIドローンの常時効果OS・モジュール passive をプレイヤーステータスへ反映
+  applyDroneStatsToPlayer(s, drones, droneModuleInv, elementId, droneOC);
   return s;
 }
 
@@ -2318,6 +2672,14 @@ class SaveManager {
       bgmOn: true,              // BGM
       vibrationOn: true,        // 振動（対応端末のみ）
       showFps: false,           // FPS表示
+      // --- Phase 5-B: AIドローン（既存セーブは既定値で補完される） ---
+      drones: [],               // 所持ドローン本体インスタンス
+      droneModulesInv: [],      // 所持ドローンモジュール
+      droneEquipped: [],        // 装備スロット（ドローンuidの配列）
+      droneSlots: 1,            // 解放済みスロット数（gem/研究で拡張）
+      droneChips: 0,            // 【旧仕様】互換のため保持（現在は未使用）
+      quantumCores: 0,          // 将来の進化・上位強化用素材
+      droneIntroDone: false,    // 初回スターター配布フラグ
     };
   }
 
@@ -3145,7 +3507,10 @@ class Player {
     const s = computeResearchStats(
       this.game.equippedModules(),
       this.game.meta ? this.game.meta.activeElement : 'none',
-      this.game.elementState ? this.game.elementState() : null
+      this.game.elementState ? this.game.elementState() : null,
+      this.game.equippedDrones ? this.game.equippedDrones() : null,
+      this.game.droneModuleInv ? this.game.droneModuleInv() : null,
+      this.game.droneOverclockActive
     );
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
@@ -4854,6 +5219,8 @@ class Gacha {
 
   resultName(result) {
     if (result.kind === 'skin') return result.skin.name;
+    if (result.kind === 'droneModule') return result.bp.name;
+    if (result.kind === 'drone') return 'AIドローン';
     const bp = blueprintById(result.module.bp);
     return bp ? bp.name : '?';
   }
@@ -4881,6 +5248,11 @@ class Gacha {
       subEl.textContent = result.duplicate
         ? '所持済み → ' + result.shards + ' シャード'
         : 'スキン獲得';
+    } else if (result.kind === 'droneModule') {
+      subEl.textContent = 'ドローンモジュール / ' + (result.bp.desc || '');
+    } else if (result.kind === 'drone') {
+      const def = droneRarityDef(result.rarity);
+      subEl.textContent = 'ドローン本体 / OS効果 ' + Math.round(def.mul * 100) + '% / 枠' + def.slots;
     } else {
       const bp = blueprintById(result.module.bp);
       const type = MODULE_TYPES.find((t) => t.id === bp.type);
@@ -4900,6 +5272,468 @@ class Gacha {
 /* =========================================================
  * 9.59 属性コアパネル（ELEMENTS配列から自動生成）
  * ======================================================= */
+
+/* =========================================================
+ * AIドローン編成パネル
+ * ======================================================= */
+class DronePanel {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('drone-panel');
+    this.isOpen = false;
+    this.selected = null;    // 詳細表示中のドローンuid
+    this.tab = 'manage';     // manage | codex | fusion
+    this.openModuleGroups = {};   // モジュール種類ごとの展開状態
+
+    document.getElementById('btn-drone-close')
+      .addEventListener('click', () => this.close());
+    this.panel.querySelectorAll('.drone-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.tab = btn.dataset.dtab;
+        this.panel.querySelectorAll('.drone-tab').forEach((b) =>
+          b.classList.toggle('active', b === btn));
+        this.game.sfx.buy();
+        this.refresh();
+      });
+    });
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    const drones = this.game.meta.drones || [];
+    if (!this.selected || !this.game.droneById(this.selected)) {
+      const eq = this.game.equippedDrones();
+      this.selected = eq[0] ? eq[0].uid : (drones[0] ? drones[0].uid : null);
+    }
+    this.refresh();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  /* ---- 共通ヘルパ ---- */
+
+  /** レアリティ順（高い順）に並べ替えた配列を返す */
+  sortByRarityDesc(list) {
+    return list.slice().sort((a, b) => {
+      const d = droneRarityIndex(b.rarity) - droneRarityIndex(a.rarity);
+      if (d !== 0) return d;
+      return (b.level || 0) - (a.level || 0);
+    });
+  }
+
+  /** 所持済みのドローンレアリティ集合（図鑑の??? 判定に使う） */
+  ownedRaritySet() {
+    const set = {};
+    (this.game.meta.drones || []).forEach((d) => { set[d.rarity] = true; });
+    return set;
+  }
+  /** 所持済みのドローンモジュール種類集合 */
+  ownedModuleSet() {
+    const set = {};
+    (this.game.meta.droneModulesInv || []).forEach((m) => { set[m.bp] = true; });
+    return set;
+  }
+  /** 全ドローンで装備中のモジュールuid集合 */
+  equippedModuleSet() {
+    const set = {};
+    (this.game.meta.drones || []).forEach((d) =>
+      (d.modules || []).forEach((m) => { set[m] = true; }));
+    return set;
+  }
+
+  refresh() {
+    if (!this.isOpen) return;
+    const g = this.game;
+    document.getElementById('val-quantum').textContent = formatNumber(g.meta.quantumCores || 0);
+
+    const views = { manage: 'drone-manage', codex: 'drone-codex', fusion: 'drone-fusion' };
+    Object.keys(views).forEach((k) => {
+      const el = document.getElementById(views[k]);
+      if (el) el.classList.toggle('hidden', this.tab !== k);
+    });
+    const note = document.getElementById('drone-note');
+    if (note) {
+      if (this.tab === 'manage') note.textContent = 'OSでドローンの役割が変わります。攻撃OSのみ攻撃し、他はプレイヤーを常時支援します。';
+      else if (this.tab === 'fusion') note.textContent = '同じレアリティ' + DRONE_FUSION_COUNT + '体＋量子コアで、1段階上のレアリティへ100%成功で合成します。';
+      else note.textContent = '未入手のドローン・モジュールは ??? で表示されます。';
+    }
+
+    if (this.tab === 'manage') this.renderManage();
+    else if (this.tab === 'codex') this.renderCodex();
+    else this.renderFusion();
+  }
+
+  /* =========================================================
+   * 編成タブ
+   * ======================================================= */
+  renderManage() {
+    this.renderSlots();
+    this.renderDetail();
+    this.renderOwned();
+    this.renderModulesOwned();
+  }
+
+  renderSlots() {
+    const g = this.game;
+    const wrap = document.getElementById('drone-slots');
+    const max = g.droneSlotsMax();
+    document.getElementById('drone-slot-count').textContent =
+      g.equippedDrones().length + ' / ' + max;
+    wrap.textContent = '';
+    const eq = g.equippedDrones();
+    for (let i = 0; i < max; i++) {
+      const slot = document.createElement('div');
+      slot.className = 'drone-slot';
+      const d = eq[i];
+      if (d) {
+        const rar = droneRarityDef(d.rarity);
+        const os = droneOsById(d.os);
+        slot.classList.add('filled');
+        slot.style.borderColor = rar.color;
+        slot.innerHTML =
+          '<span class="ds-icon" style="color:' + rar.color + '">' + rar.icon + '</span>' +
+          '<span class="ds-name" style="color:' + rar.color + '">' + rar.name + (d.locked ? ' 🔒' : '') + '</span>' +
+          '<span class="ds-os" style="color:' + os.color + '">' + os.icon + ' ' + os.name + '</span>' +
+          '<span class="ds-lv">Lv' + d.level + '</span>';
+        slot.addEventListener('click', () => { this.selected = d.uid; g.sfx.buy(); this.refresh(); });
+      } else {
+        slot.classList.add('empty');
+        slot.innerHTML = '<span class="ds-plus">＋</span><span class="ds-name">空きスロット</span>';
+      }
+      wrap.appendChild(slot);
+    }
+    if (max < DRONE_SLOT_MAX) {
+      const cur = g.meta.droneSlots || 1;
+      const cost = [0, 150, 400, 900][cur] || 900;
+      const btn = document.createElement('button');
+      btn.className = 'drone-unlock-btn';
+      btn.textContent = 'スロット解放  ' + cost + '◆';
+      btn.addEventListener('click', () => { g.unlockDroneSlotWithGem(); this.refresh(); });
+      wrap.appendChild(btn);
+    }
+  }
+
+  renderDetail() {
+    const g = this.game;
+    const host = document.getElementById('drone-detail');
+    host.textContent = '';
+    const d = this.selected ? g.droneById(this.selected) : null;
+    if (!d) {
+      host.innerHTML = '<div class="drone-empty-note">ドローンを選択してください。召喚（ガチャ）から入手できます。</div>';
+      return;
+    }
+    const rar = droneRarityDef(d.rarity);
+    const equipped = (g.meta.droneEquipped || []).indexOf(d.uid) >= 0;
+    const slots = droneModuleSlots(d.rarity);
+
+    const card = document.createElement('div');
+    card.className = 'drone-detail-card';
+    card.style.borderColor = rar.color;
+
+    let html = '<div class="dd-head">' +
+      '<span class="dd-icon" style="color:' + rar.color + '">' + rar.icon + '</span>' +
+      '<span class="dd-title"><span class="dd-name" style="color:' + rar.color + '">' + rar.name + '</span>' +
+      '<span class="dd-rar">Lv' + d.level + ' / OS効果 ' + Math.round(rar.mul * 100) + '% / 枠' + slots + '</span></span>' +
+      '<button class="dd-lock' + (d.locked ? ' on' : '') + '" title="ロック">' + (d.locked ? '🔒' : '🔓') + '</button>' +
+      '<button class="dd-equip ' + (equipped ? 'on' : '') + '">' + (equipped ? '装備中' : '装備する') + '</button>' +
+      '</div>';
+
+    // OS選択
+    html += '<div class="dd-sub-title">OS（役割）</div><div class="dd-os-row">';
+    for (let i = 0; i < DRONE_OS.length; i++) {
+      const os = DRONE_OS[i];
+      const on = d.os === os.id;
+      html += '<button class="dd-os' + (on ? ' on' : '') + '" data-os="' + os.id + '" style="' +
+        (on ? 'border-color:' + os.color + ';color:' + os.color : '') + '">' +
+        os.icon + ' ' + os.name + '</button>';
+    }
+    html += '</div>';
+    html += '<div class="dd-os-desc">' + droneOsById(d.os).desc + '</div>';
+
+    // モジュール枠
+    html += '<div class="dd-sub-title">モジュール枠 (' + d.modules.length + '/' + slots + ')</div>';
+    html += '<div class="dd-mod-row">';
+    for (let i = 0; i < slots; i++) {
+      const muid = d.modules[i];
+      if (muid) {
+        const inst = g.droneModuleInstById(muid);
+        const bp = inst && droneModuleById(inst.bp);
+        const mr = inst && rarityById(inst.rarity);
+        html += '<button class="dd-mod filled" data-unequip="' + muid + '" style="border-color:' +
+          (mr ? mr.color : '#888') + '">' + (bp ? bp.name : '?') + '<span class="dd-mod-x">✕</span></button>';
+      } else {
+        html += '<div class="dd-mod empty">空き枠</div>';
+      }
+    }
+    html += '</div>';
+
+    // 育成・解体
+    const cost = droneLevelUpCost(d.level);
+    html += '<div class="dd-actions">';
+    if (d.level < DRONE_MAX_LEVEL) {
+      const afford = g.meta.coin >= cost.coin && (g.meta.quantumCores || 0) >= cost.quantum;
+      html += '<button class="dd-levelup' + (afford ? '' : ' disabled') + '">Lvアップ  ' +
+        formatNumber(cost.coin) + '◎ + ' + cost.quantum + '量子</button>';
+    } else {
+      html += '<button class="dd-evolve">進化（近日実装）</button>';
+    }
+    html += '<button class="dd-dismantle' + (d.locked ? ' disabled' : '') + '">解体 +' + rar.dust + '量子</button>';
+    html += '</div>';
+
+    card.innerHTML = html;
+    host.appendChild(card);
+
+    card.querySelector('.dd-equip').addEventListener('click', () => { g.toggleEquipDrone(d.uid); this.refresh(); });
+    card.querySelector('.dd-lock').addEventListener('click', () => { g.toggleDroneLock(d.uid); this.refresh(); });
+    card.querySelectorAll('.dd-os').forEach((btn) => {
+      btn.addEventListener('click', () => { g.setDroneOs(d.uid, btn.dataset.os); this.refresh(); });
+    });
+    card.querySelectorAll('.dd-mod[data-unequip]').forEach((btn) => {
+      btn.addEventListener('click', () => { g.unequipDroneModule(d.uid, btn.dataset.unequip); this.refresh(); });
+    });
+    const lvBtn = card.querySelector('.dd-levelup');
+    if (lvBtn) lvBtn.addEventListener('click', () => { g.levelUpDrone(d.uid); this.refresh(); });
+    const evBtn = card.querySelector('.dd-evolve');
+    if (evBtn) evBtn.addEventListener('click', () => { g.sfx.deny(); g.showToast('進化は近日実装予定です'); });
+    const dmBtn = card.querySelector('.dd-dismantle');
+    if (dmBtn) dmBtn.addEventListener('click', () => {
+      if (d.locked) { g.sfx.deny(); g.showToast('ロック中のドローンは解体できません'); return; }
+      if (this._armDismantle !== d.uid) {
+        this._armDismantle = d.uid;
+        dmBtn.textContent = '本当に解体する？';
+        dmBtn.classList.add('armed');
+        return;
+      }
+      this._armDismantle = null;
+      g.dismantleDrone(d.uid);
+      this.selected = null;
+      this.refresh();
+    });
+  }
+
+  renderOwned() {
+    const g = this.game;
+    const wrap = document.getElementById('drone-owned');
+    wrap.textContent = '';
+    const drones = this.sortByRarityDesc(g.meta.drones || []);
+    document.getElementById('drone-owned-count').textContent = drones.length + '体';
+    if (drones.length === 0) {
+      wrap.innerHTML = '<div class="drone-empty-note">所持ドローンはありません。召喚（ガチャ）から入手できます。</div>';
+      return;
+    }
+    for (let i = 0; i < drones.length; i++) {
+      const d = drones[i];
+      const rar = droneRarityDef(d.rarity);
+      const os = droneOsById(d.os);
+      const equipped = (g.meta.droneEquipped || []).indexOf(d.uid) >= 0;
+      const card = document.createElement('button');
+      card.className = 'drone-owned-card' + (this.selected === d.uid ? ' selected' : '');
+      card.style.borderColor = rar.color;
+      card.innerHTML =
+        '<span class="do-icon" style="color:' + rar.color + '">' + rar.icon + '</span>' +
+        '<span class="do-info"><span class="do-name" style="color:' + rar.color + '">' + rar.name +
+        (equipped ? ' <span class="do-eq">装備中</span>' : '') +
+        (d.locked ? ' <span class="do-lock">🔒</span>' : '') + '</span>' +
+        '<span class="do-sub">Lv' + d.level + ' / OS効果 ' + Math.round(rar.mul * 100) + '%</span>' +
+        '<span class="do-os" style="color:' + os.color + '">' + os.icon + ' ' + os.name + '</span></span>';
+      card.addEventListener('click', () => { this.selected = d.uid; this._armDismantle = null; g.sfx.buy(); this.refresh(); });
+      wrap.appendChild(card);
+    }
+  }
+
+  /** モジュールは「種類ごとの階層表示」。展開すると所持一覧をレア順で表示する */
+  renderModulesOwned() {
+    const g = this.game;
+    const wrap = document.getElementById('drone-modules-owned');
+    wrap.textContent = '';
+    const inv = g.meta.droneModulesInv || [];
+    const d = this.selected ? g.droneById(this.selected) : null;
+    const equippedSet = this.equippedModuleSet();
+
+    // 種類ごとにまとめる
+    const byType = {};
+    inv.forEach((inst) => {
+      if (!byType[inst.bp]) byType[inst.bp] = [];
+      byType[inst.bp].push(inst);
+    });
+
+    const types = DRONE_MODULES.filter((bp) => byType[bp.id] && byType[bp.id].length > 0);
+    if (types.length === 0) {
+      wrap.innerHTML = '<div class="drone-empty-note">所持モジュールはありません。召喚から入手できます。</div>';
+      return;
+    }
+
+    for (let i = 0; i < types.length; i++) {
+      const bp = types[i];
+      const list = this.sortByRarityDesc(byType[bp.id]);
+      const isOpen = !!this.openModuleGroups[bp.id];
+
+      const group = document.createElement('div');
+      group.className = 'dmod-group';
+
+      const head = document.createElement('button');
+      head.className = 'dmod-group-head' + (isOpen ? ' open' : '');
+      head.innerHTML =
+        '<span class="dmg-arrow">' + (isOpen ? '▼' : '▶') + '</span>' +
+        '<span class="dmg-name" style="color:' + bp.color + '">' + bp.name + '</span>' +
+        '<span class="dmg-count">' + list.length + '</span>';
+      head.addEventListener('click', () => {
+        this.openModuleGroups[bp.id] = !isOpen;
+        g.sfx.buy();
+        this.refresh();
+      });
+      group.appendChild(head);
+
+      if (isOpen) {
+        const body = document.createElement('div');
+        body.className = 'dmod-group-body';
+        for (let j = 0; j < list.length; j++) {
+          const inst = list[j];
+          const rar = rarityById(inst.rarity);
+          const isEq = equippedSet[inst.uid];
+          const card = document.createElement('button');
+          card.className = 'drone-mod-card' + (isEq ? ' equipped' : '');
+          card.style.borderColor = rar.color;
+          card.innerHTML =
+            '<span class="dm-name" style="color:' + rar.color + '">' + rar.name + '</span>' +
+            '<span class="dm-desc">' + bp.desc + '</span>' +
+            '<span class="dm-tag">' + (isEq ? '装備中' : (d ? 'タップで装備' : 'ドローンを選択')) + '</span>';
+          card.addEventListener('click', () => {
+            if (isEq) { g.showToast('既に装備中です'); return; }
+            if (!d) { g.sfx.deny(); g.showToast('先に装備するドローンを選択してください'); return; }
+            g.equipDroneModule(d.uid, inst.uid);
+            this.refresh();
+          });
+          body.appendChild(card);
+        }
+        group.appendChild(body);
+      }
+      wrap.appendChild(group);
+    }
+  }
+
+  /* =========================================================
+   * 合成タブ
+   * ======================================================= */
+  renderFusion() {
+    const g = this.game;
+    const host = document.getElementById('drone-fusion');
+    host.textContent = '';
+
+    const counts = {};
+    (g.meta.drones || []).forEach((d) => {
+      counts[d.rarity] = (counts[d.rarity] || 0) + 1;
+    });
+
+    const head = document.createElement('div');
+    head.className = 'fusion-head';
+    head.innerHTML = '<span>所持量子コア</span><span class="fusion-quantum">' +
+      formatNumber(g.meta.quantumCores || 0) + '</span>';
+    host.appendChild(head);
+
+    for (let i = 0; i < DRONE_RARITIES.length; i++) {
+      const def = DRONE_RARITIES[i];
+      const next = droneNextRarity(def.id);
+      if (!next || def.fuse == null) continue;   // 最上位は合成元にならない
+      const nextDef = droneRarityDef(next);
+      const total = counts[def.id] || 0;
+      const usable = g.fusableDrones(def.id).length;
+      const enoughDrones = usable >= DRONE_FUSION_COUNT;
+      const enoughQuantum = (g.meta.quantumCores || 0) >= def.fuse;
+      const ok = enoughDrones && enoughQuantum;
+
+      const row = document.createElement('div');
+      row.className = 'fusion-row' + (ok ? ' ready' : '');
+      row.style.borderColor = def.color;
+      row.innerHTML =
+        '<div class="fr-top">' +
+          '<span class="fr-from" style="color:' + def.color + '">' + def.icon + ' ' + def.name + '</span>' +
+          '<span class="fr-arrow">→</span>' +
+          '<span class="fr-to" style="color:' + nextDef.color + '">' + nextDef.icon + ' ' + nextDef.name + '</span>' +
+        '</div>' +
+        '<div class="fr-req">' +
+          '<span class="' + (enoughDrones ? 'ok' : 'ng') + '">素材 ' + usable + ' / ' + DRONE_FUSION_COUNT + '体</span>' +
+          '<span class="' + (enoughQuantum ? 'ok' : 'ng') + '">量子コア ' + def.fuse + '</span>' +
+          '<span class="fr-own">所持 ' + total + '体</span>' +
+        '</div>';
+
+      const btn = document.createElement('button');
+      btn.className = 'fusion-btn' + (ok ? '' : ' disabled');
+      btn.textContent = ok ? '合成する（成功率100%）' : '素材が不足しています';
+      btn.addEventListener('click', () => {
+        g.fuseDrones(def.id);
+        this.refresh();
+      });
+      row.appendChild(btn);
+      host.appendChild(row);
+    }
+
+    const note = document.createElement('div');
+    note.className = 'drone-empty-note';
+    note.textContent = 'ロック中（🔒）のドローンは素材になりません。装備中の機体は最後に消費されます。';
+    host.appendChild(note);
+  }
+
+  /* =========================================================
+   * 図鑑タブ
+   * ======================================================= */
+  renderCodex() {
+    const g = this.game;
+    const host = document.getElementById('drone-codex');
+    const ownedRar = this.ownedRaritySet();
+    const ownedMod = this.ownedModuleSet();
+    const hasAnyDrone = (g.meta.drones || []).length > 0;
+
+    let html = '<div class="drone-section-title">ドローン本体図鑑</div>';
+    for (let i = 0; i < DRONE_RARITIES.length; i++) {
+      const r = DRONE_RARITIES[i];
+      if (ownedRar[r.id]) {
+        html += '<div class="codex-drone-row"><span class="cdr-icon" style="color:' + r.color + '">' + r.icon +
+          '</span><span class="cdr-body"><span class="cdr-name" style="color:' + r.color + '">' + r.name +
+          '<span class="cdr-tag">枠' + r.slots + '</span>' +
+          (r.gacha ? '' : '<span class="cdr-tag">合成限定</span>') +
+          '</span><span class="cdr-desc">OS効果 ' + Math.round(r.mul * 100) + '% / 解体 +' + r.dust + '量子' +
+          (r.fuse != null ? ' / 合成 ' + r.fuse + '量子' : '') + '</span></span></div>';
+      } else {
+        html += '<div class="codex-drone-row locked"><span class="cdr-icon">？</span>' +
+          '<span class="cdr-body"><span class="cdr-name">？？？</span>' +
+          '<span class="cdr-desc">未入手（' + (r.gacha ? '召喚で入手' : '合成で入手') + '）</span></span></div>';
+      }
+    }
+
+    html += '<div class="drone-section-title">OS図鑑</div>';
+    if (!hasAnyDrone) {
+      html += '<div class="drone-empty-note">ドローンを1体入手するとOS情報が解放されます。</div>';
+    } else {
+      for (let i = 0; i < DRONE_OS.length; i++) {
+        const os = DRONE_OS[i];
+        html += '<div class="codex-drone-row"><span class="cdr-icon" style="color:' + os.color + '">' + os.icon +
+          '</span><span class="cdr-body"><span class="cdr-name">' + os.name +
+          '<span class="cdr-tag">' + os.tagline + '</span></span><span class="cdr-desc">' + os.desc + '</span></span></div>';
+      }
+    }
+
+    html += '<div class="drone-section-title">ドローンモジュール図鑑</div>';
+    for (let i = 0; i < DRONE_MODULES.length; i++) {
+      const m = DRONE_MODULES[i];
+      if (ownedMod[m.id]) {
+        html += '<div class="codex-drone-row"><span class="cdr-icon" style="color:' + m.color + '">◈' +
+          '</span><span class="cdr-body"><span class="cdr-name">' + m.name +
+          '</span><span class="cdr-desc">' + m.desc + '</span></span></div>';
+      } else {
+        html += '<div class="codex-drone-row locked"><span class="cdr-icon">？</span>' +
+          '<span class="cdr-body"><span class="cdr-name">？？？</span>' +
+          '<span class="cdr-desc">未入手（召喚で入手）</span></span></div>';
+      }
+    }
+    host.innerHTML = html;
+  }
+}
 
 class Elements {
   constructor(game) {
@@ -5791,6 +6625,10 @@ class Game {
     this._spawnPt = { x: 0, y: 0 };
 
     this.sfx = new Sfx();
+    this.droneRuntime = [];
+    this.droneLasers = [];
+    this.droneOverclockActive = false;
+    this.ensureDroneStarter();
     this.player = new Player(this);
     this.waveManager = new WaveManager(this);
 
@@ -5810,12 +6648,13 @@ class Game {
     this.modules = new Modules(this);
     this.gacha = new Gacha(this);
     this.elements = new Elements(this);
+    this.dronePanel = new DronePanel(this);
     this.achievements = new Achievements(this);
     this.settings = new Settings(this);
     this.panelList = [
       this.shop, this.codex, this.research, this.lab,
       this.modules, this.gacha, this.elements,
-      this.achievements, this.settings,
+      this.achievements, this.settings, this.dronePanel,
     ];
     this.bindEvents();
 
@@ -5944,9 +6783,9 @@ class Game {
       codex: () => this.codex.open(),
       achievements: () => this.achievements.open(),
       settings: () => this.settings.open(),
+      drone: () => this.dronePanel.open(),
       // Ver1.0で実装予定
       ultimate: () => this.showToast('Ver1.0で実装予定'),
-      drone: () => this.showToast('Ver1.0で実装予定'),
       daily: () => this.showToast('Ver1.0で実装予定'),
     };
     document.querySelectorAll('#overlay-home [data-home]').forEach((btn) => {
@@ -5981,6 +6820,11 @@ class Game {
     this._devTaps = 0;
     this._devTapTime = 0;
     this.hud.fps.addEventListener('click', () => this.onDevTap());
+    // ホーム画面のバージョン表記も同じ隠しコマンドに対応（FPS非表示時の予備導線）
+    if (this.hud.homeVersion) {
+      this.hud.homeVersion.classList.add('dev-tap-target');
+      this.hud.homeVersion.addEventListener('click', () => this.onDevTap());
+    }
 
     document.getElementById('btn-offline-close')
       .addEventListener('click', () => {
@@ -6114,6 +6958,26 @@ class Game {
         this.meta.shards += shards;
         return { kind: 'skin', rarity: rarity.id, skin: sk, duplicate: true, shards };
       }
+    }
+
+    // ---- AIドローン関連の排出（本体とモジュールのみ） ----
+    if (kind === 'droneModule') {
+      const bp = DRONE_MODULES[Math.floor(Math.random() * DRONE_MODULES.length)];
+      const inst = createDroneModuleInstance(bp.id, rarity.id);
+      this.meta.droneModulesInv.push(inst);
+      return { kind: 'droneModule', rarity: rarity.id, dmodule: inst, bp };
+    }
+    if (kind === 'drone') {
+      // 合成限定レア（Unique+ / OC Unique）はガチャから排出しない
+      const def = droneRarityDef(rarity.id);
+      const rid = def.gacha ? rarity.id : 'unique';
+      const d = createDroneInstance(rid, 'os_attack');
+      this.meta.drones.push(d);
+      // 空きスロットがあれば自動装備
+      if ((this.meta.droneEquipped || []).length < this.droneSlotsMax()) {
+        this.meta.droneEquipped.push(d.uid);
+      }
+      return { kind: 'drone', rarity: rid, drone: d };
     }
 
     // モジュール
@@ -6891,6 +7755,10 @@ class Game {
 
   onOverclockStart(isSuper) {
     this.runOverclocks = (this.runOverclocks || 0) + 1;
+    // ドローン全OSをオーバークロック強化（常時OSはrecalcで、攻撃OSは攻撃速度2倍）
+    this.droneOverclockActive = true;
+    if (this.player) this.player.recalc();
+    this.initDroneRuntime();
     this.vibrate(isSuper ? [30, 40, 30] : 20);
     this.flashScreen(isSuper ? 0.45 : 0.28, isSuper ? '#ff2d95' : '#ffc233');
     this.shakeScreen(isSuper ? 14 : 8);
@@ -6907,6 +7775,10 @@ class Game {
   }
 
   onOverheatStart() {
+    // オーバークロック終了 → ドローン強化も解除
+    this.droneOverclockActive = false;
+    if (this.player) this.player.recalc();
+    this.initDroneRuntime();
     this.flashScreen(0.2, '#ff3b5c');
     this.sfx.overheat();
     this.hud.heatWrap.classList.remove('overclock', 'super');
@@ -6937,6 +7809,7 @@ class Game {
     this.meta.devMode = !this.meta.devMode;
     this.requestSave();
     this.flushSave();
+    this.applyDisplaySettings();   // 開発者モード中はFPSを表示状態に同期する
     this.settings.refresh();
     this.showToast(
       this.meta.devMode
@@ -6954,6 +7827,7 @@ class Game {
     else if (kind === 'shard') this.meta.shards += 50000;
     else if (kind === 'frag') this.meta.fragments += 50;
     else if (kind === 'cash') this.addCash(1e9);
+    else if (kind === 'quantum') this.meta.quantumCores = (this.meta.quantumCores || 0) + 5000;
     else if (kind === 'unlockAll') {
       // 全Tierを解放した状態にする（到達Wave記録を引き上げる）
       const last = UPGRADE_TIERS[UPGRADE_TIERS.length - 1].requiredWave;
@@ -6967,7 +7841,10 @@ class Game {
       this.meta.gem = 0;
       this.meta.shards = 0;
       this.meta.fragments = 0;
+      this.meta.quantumCores = 0;
     }
+    // ドローン画面が開いていれば表示を更新する
+    if (this.dronePanel && this.dronePanel.isOpen) this.dronePanel.refresh();
     this.requestSave();
     this.flushSave();
     this.hudDirty = true;
@@ -6995,6 +7872,17 @@ class Game {
 
   addCoin(amount) {
     if (this.running) this.runCoinEarned += amount * this.player.stats.coinBonus;
+    // 量子コア（経済OS等で獲得倍率が上がると溜まる）
+    const qm = this.player.stats.quantumFindMul;
+    if (this.running && qm > 0) {
+      this.quantumFrac = (this.quantumFrac || 0) + amount * 0.0006 * qm;
+      if (this.quantumFrac >= 1) {
+        const w = Math.floor(this.quantumFrac);
+        this.meta.quantumCores += w;
+        this.quantumFrac -= w;
+        this.saveDirty = true;
+      }
+    }
     this.coinFrac += amount * this.player.stats.coinBonus;
     if (this.coinFrac >= 1) {
       const whole = Math.floor(this.coinFrac);
@@ -7105,6 +7993,8 @@ class Game {
     this.runCashEarned = 0;
     this.runCrits = 0;
     this.runOverclocks = 0;
+    this.droneOverclockActive = false;
+    this.initDroneRuntime();
 
     // 開始Waveは「戦域転送」で解放した上限内で、設定から選んだ値を使う
     const startWave = Math.max(1, Math.min(this.meta.selectedStartWave, s.startWave));
@@ -7205,6 +8095,412 @@ class Game {
     this.setPaused(false);
     this.prepareFreshBattle();
     this.showHome();
+  }
+
+  /* ---------- AIドローン（Phase 5-B） ---------- */
+
+  droneById(uid) {
+    const arr = this.meta.drones || [];
+    for (let i = 0; i < arr.length; i++) if (arr[i].uid === uid) return arr[i];
+    return null;
+  }
+  droneModuleInstById(uid) {
+    const arr = this.meta.droneModulesInv || [];
+    for (let i = 0; i < arr.length; i++) if (arr[i].uid === uid) return arr[i];
+    return null;
+  }
+  droneModuleInv() {
+    const m = {};
+    const arr = this.meta.droneModulesInv || [];
+    for (let i = 0; i < arr.length; i++) m[arr[i].uid] = arr[i];
+    return m;
+  }
+  droneSlotsMax() {
+    const bonus = this.player ? (this.player.stats.droneSlotBonus || 0) : 0;
+    return Math.max(1, Math.min(DRONE_SLOT_MAX, (this.meta.droneSlots || 1) + bonus));
+  }
+  /** 装備スロットに入っている（有効な）ドローン本体を返す */
+  equippedDrones() {
+    const out = [];
+    const eq = this.meta.droneEquipped || [];
+    const max = this.droneSlotsMax();
+    for (let i = 0; i < eq.length && out.length < max; i++) {
+      const d = this.droneById(eq[i]);
+      if (d) out.push(d);
+    }
+    return out;
+  }
+
+  /** 初回スターター配布と、旧セーブ（本体タイプ制）からの移行 */
+  ensureDroneStarter() {
+    if (!Array.isArray(this.meta.drones)) this.meta.drones = [];
+    // 旧形式のドローンを新形式へ移行する
+    for (let i = 0; i < this.meta.drones.length; i++) {
+      migrateDroneInstance(this.meta.drones[i]);
+    }
+    if (this.meta.droneIntroDone) return;
+    this.meta.droneIntroDone = true;
+    const d = createDroneInstance('common', 'os_attack');
+    this.meta.drones.push(d);
+    this.meta.droneEquipped = [d.uid];
+    this.saveDirty = true;
+  }
+
+  /** 戦闘用のドローン実行状態を構築（周回開始・構成変更時に呼ぶ） */
+  initDroneRuntime() {
+    this.droneRuntime = [];
+    if (!this.droneLasers) this.droneLasers = [];
+    const drones = this.equippedDrones();
+    const n = drones.length;
+    const s = this.player ? this.player.stats : BASE_STATS;
+    const inv = this.droneModuleInv();
+    for (let i = 0; i < n; i++) {
+      const d = drones[i];
+      const rar = droneRarityDef(d.rarity);
+      const os = droneOsById(d.os);
+      if (!os) continue;
+      const u = {
+        drone: d, os: d.os, color: os.color || rar.color,
+        angle: (i / Math.max(1, n)) * TAU, orbitR: 44 + i * 12,
+        orbitSpeed: 0.55 + i * 0.06,
+        x: this.cx, y: this.cy, cd: 0, repairTimer: 1.2, fireFx: 0, fx: null,
+      };
+      if (os.role === 'attack') {
+        const c = os.combat(d.level, s);
+        if (d.modules) {
+          for (let j = 0; j < d.modules.length; j++) {
+            const inst = inv[d.modules[j]];
+            if (inst) { const bp = droneModuleById(inst.bp); if (bp && bp.combat) bp.combat(c, droneRarityMul(inst.rarity)); }
+          }
+        }
+        const gain = droneRarityMul(d.rarity) * (s.droneOsMul || 1) * (1 + (s.droneMastery || 0));
+        u.damage = c.damage * gain * (s.droneDamageMul || 1);
+        u.interval = c.interval / (s.droneAspdMul || 1);
+        u.range = c.range + (s.droneRangeBonus || 0);
+        u.crit = c.crit + (s.droneCritChance || 0);
+      } else {
+        u.repairScale = droneOsScale(d, s, false);
+      }
+      this.droneRuntime.push(u);
+    }
+  }
+
+  /** ドローン位置から射程内の最も近い敵 */
+  findDroneTarget(x, y, range) {
+    const enemies = this.enemies;
+    const rSq = range * range;
+    let best = null, bestD = rSq;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.hp <= 0) continue;
+      const dx = e.x - x, dy = e.y - y;
+      const dSq = dx * dx + dy * dy;
+      if (dSq <= bestD) { bestD = dSq; best = e; }
+    }
+    return best;
+  }
+
+  updateDrones(dt) {
+    const rt = this.droneRuntime;
+    if (this.droneLasers) {
+      for (let i = this.droneLasers.length - 1; i >= 0; i--) {
+        this.droneLasers[i].life -= dt;
+        if (this.droneLasers[i].life <= 0) this.droneLasers.splice(i, 1);
+      }
+    }
+    if (!rt || !rt.length) return;
+    const s = this.player.stats;
+    const oc = this.droneOverclockActive;
+    for (let i = 0; i < rt.length; i++) {
+      const u = rt[i];
+      u.angle += dt * u.orbitSpeed;
+      u.x = this.cx + Math.cos(u.angle) * u.orbitR;
+      u.y = this.cy + Math.sin(u.angle) * u.orbitR;
+      if (u.fireFx > 0) u.fireFx -= dt;
+
+      if (u.os === 'os_attack') {
+        u.cd -= dt;
+        if (u.cd <= 0) {
+          const target = this.findDroneTarget(u.x, u.y, u.range);
+          if (target) {
+            this.droneFire(u, target);
+            u.cd = oc ? u.interval * 0.5 : u.interval;   // オーバークロック中は攻撃速度2倍
+          } else {
+            u.cd = 0;
+          }
+        }
+      } else if (u.os === 'os_repair') {
+        u.repairTimer -= dt;
+        if (u.repairTimer <= 0) {
+          const interval = Math.max(1.1, 3.0 / (s.droneEfficiency || 1));
+          u.repairTimer = interval;
+          const heal = (s.maxHp * 0.02 + 10) * (u.repairScale || 1);
+          this.player.heal(heal);
+          this.spawnParticles(this.cx, this.cy, 5, 55, 0.5, 3, '#ff6b8f');
+        }
+      }
+    }
+  }
+
+  droneFire(u, target) {
+    const s = this.player.stats;
+    let dmg = u.damage;
+    let critTier = 0;
+    if (Math.random() < u.crit) { critTier = 1; dmg *= 1.6; }
+    const el = this.meta.activeElement;
+    // 重力: 近距離ダメージ上昇
+    if (el === 'gravity') {
+      const dx = target.x - this.cx, dy = target.y - this.cy;
+      const halfR = s.range * 0.5;
+      if (dx * dx + dy * dy < halfR * halfR) dmg *= 1.2;
+    }
+    this.damageEnemy(target, dmg, critTier, true);
+    this.applyDroneSynergy(el, target, dmg);
+    u.fireFx = 0.09;
+    u.fx = { x: target.x, y: target.y };
+    if (this.droneLasers) this.droneLasers.push({ x1: u.x, y1: u.y, x2: target.x, y2: target.y, life: 0.09, color: u.color });
+  }
+
+  /** 攻撃OSの属性シナジー（既存の状態異常システムを再利用） */
+  applyDroneSynergy(el, target, dmg) {
+    if (!target || target.hp <= 0) return;
+    if (el === 'fire') {
+      const dps = dmg * 0.35;
+      if (dps > target.burnDps) target.burnDps = dps;
+      target.burnTimer = Math.max(target.burnTimer, 2.0);
+    } else if (el === 'ice') {
+      target.chill = Math.min(target.chill + 0.16, target.slowMax || 0.8);
+      target.chillTimer = 2.0;
+    } else if (el === 'thunder') {
+      // 近くの敵へ連鎖
+      let chained = 0;
+      for (let i = 0; i < this.enemies.length && chained < 2; i++) {
+        const e = this.enemies[i];
+        if (e === target || e.hp <= 0) continue;
+        const dx = e.x - target.x, dy = e.y - target.y;
+        if (dx * dx + dy * dy < 90 * 90) {
+          this.damageEnemy(e, dmg * 0.5, 0, false);
+          this.spawnLightning(target.x, target.y, e.x, e.y);
+          chained++;
+        }
+      }
+    }
+    // gravity は近距離ダメージ上昇（droneFire 側で適用済み）
+  }
+
+  drawDrones(ctx) {
+    if (this.droneLasers) {
+      for (let i = 0; i < this.droneLasers.length; i++) {
+        const l = this.droneLasers[i];
+        ctx.globalAlpha = Math.min(l.life * 11, 1) * 0.9;
+        ctx.strokeStyle = l.color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(l.x1, l.y1); ctx.lineTo(l.x2, l.y2); ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const rt = this.droneRuntime;
+    if (!rt) return;
+    for (let i = 0; i < rt.length; i++) {
+      const u = rt[i];
+      ctx.save();
+      ctx.translate(u.x, u.y);
+      ctx.rotate(u.angle * 0.6);
+      ctx.shadowColor = u.color;
+      ctx.shadowBlur = 8;
+      ctx.fillStyle = u.color;
+      const r = 6;
+      ctx.beginPath();
+      for (let k = 0; k < 6; k++) {
+        const a = (k / 6) * TAU;
+        const px = Math.cos(a) * r, py = Math.sin(a) * r;
+        if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(3,5,10,0.85)';
+      ctx.beginPath(); ctx.arc(0, 0, 2.4, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  /* ---- ドローン管理（パネルから呼ばれる） ---- */
+
+  droneAfterChange() {
+    if (this.player) this.player.recalc();
+    this.initDroneRuntime();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+  }
+
+  addDrone(rarity, os) {
+    const d = createDroneInstance(rarity, os || 'os_attack');
+    this.meta.drones.push(d);
+    // 空きスロットがあれば自動装備
+    const eq = this.meta.droneEquipped;
+    if (eq.length < this.droneSlotsMax()) eq.push(d.uid);
+    this.droneAfterChange();
+    return d;
+  }
+
+  equipDroneToSlot(uid, slotIndex) {
+    const eq = this.meta.droneEquipped;
+    // 既に別スロットにあるなら外す
+    const existing = eq.indexOf(uid);
+    if (existing >= 0) eq.splice(existing, 1);
+    while (eq.length <= slotIndex) eq.push(null);
+    eq[slotIndex] = uid;
+    // null を末尾に寄せて詰める
+    this.meta.droneEquipped = eq.filter((x) => x != null);
+    this.droneAfterChange();
+  }
+  unequipSlot(slotIndex) {
+    const eq = this.equippedDrones();
+    if (eq[slotIndex]) {
+      const uid = eq[slotIndex].uid;
+      this.meta.droneEquipped = this.meta.droneEquipped.filter((x) => x !== uid);
+      this.droneAfterChange();
+    }
+  }
+  toggleEquipDrone(uid) {
+    const eq = this.meta.droneEquipped;
+    const idx = eq.indexOf(uid);
+    if (idx >= 0) { eq.splice(idx, 1); this.droneAfterChange(); return; }
+    if (eq.length >= this.droneSlotsMax()) { this.sfx.deny(); this.showToast('装備スロットが不足しています'); return; }
+    eq.push(uid);
+    this.droneAfterChange();
+  }
+  setDroneOs(uid, osId) {
+    const d = this.droneById(uid);
+    if (!d) return;
+    d.os = osId;
+    this.droneAfterChange();
+  }
+  levelUpDrone(uid) {
+    const d = this.droneById(uid);
+    if (!d) return false;
+    if (d.level >= DRONE_MAX_LEVEL) { this.sfx.deny(); this.showToast('最大レベルです（進化は近日実装）'); return false; }
+    const cost = droneLevelUpCost(d.level);
+    if (this.meta.coin < cost.coin || (this.meta.quantumCores || 0) < cost.quantum) {
+      this.sfx.deny(); this.showToast('Coin または 量子コア が不足');
+      return false;
+    }
+    this.meta.coin -= cost.coin;
+    this.meta.quantumCores -= cost.quantum;
+    d.level++;
+    this.sfx.buy();
+    this.droneAfterChange();
+    return true;
+  }
+
+  /** ロック（お気に入り）。ロック中は合成・解体の対象外 */
+  toggleDroneLock(uid) {
+    const d = this.droneById(uid);
+    if (!d) return;
+    d.locked = !d.locked;
+    this.sfx.buy();
+    this.requestSave();
+    this.flushSave();
+  }
+
+  /** 解体: レアリティに応じた量子コアを獲得する */
+  dismantleDrone(uid) {
+    const d = this.droneById(uid);
+    if (!d) return false;
+    if (d.locked) { this.sfx.deny(); this.showToast('ロック中のドローンは解体できません'); return false; }
+    const gain = droneRarityDef(d.rarity).dust;
+    // 装備を外し、モジュールはインベントリへ戻る（uid参照を消すだけ）
+    this.meta.droneEquipped = (this.meta.droneEquipped || []).filter((x) => x !== uid);
+    this.meta.drones = this.meta.drones.filter((x) => x.uid !== uid);
+    this.meta.quantumCores = (this.meta.quantumCores || 0) + gain;
+    this.sfx.buy();
+    this.showToast('解体しました  +' + gain + ' 量子コア');
+    this.droneAfterChange();
+    return true;
+  }
+
+  /** 指定レアリティで合成に使える（ロックされていない）ドローン */
+  fusableDrones(rarity) {
+    return (this.meta.drones || []).filter((d) => d.rarity === rarity && !d.locked);
+  }
+
+  /**
+   * 合成: 同レアリティ3体 + 量子コア → 1段階上のレアリティ（成功率100%）。
+   * ロック中の機体は素材にしない。装備中の機体は素材の対象から後回しにする。
+   */
+  fuseDrones(rarity) {
+    const def = droneRarityDef(rarity);
+    const next = droneNextRarity(rarity);
+    if (!next || def.fuse == null) { this.sfx.deny(); this.showToast('これ以上は合成できません'); return false; }
+
+    const pool = this.fusableDrones(rarity);
+    if (pool.length < DRONE_FUSION_COUNT) {
+      this.sfx.deny();
+      this.showToast(def.name + ' が ' + DRONE_FUSION_COUNT + '体必要です');
+      return false;
+    }
+    if ((this.meta.quantumCores || 0) < def.fuse) {
+      this.sfx.deny();
+      this.showToast('量子コアが不足しています（' + def.fuse + '）');
+      return false;
+    }
+
+    // 装備中でない機体・低Lvの機体から優先して素材にする
+    const eq = this.meta.droneEquipped || [];
+    pool.sort((a, b) => {
+      const ae = eq.indexOf(a.uid) >= 0 ? 1 : 0;
+      const be = eq.indexOf(b.uid) >= 0 ? 1 : 0;
+      if (ae !== be) return ae - be;
+      return a.level - b.level;
+    });
+    const mats = pool.slice(0, DRONE_FUSION_COUNT);
+    const matIds = mats.map((m) => m.uid);
+
+    this.meta.quantumCores -= def.fuse;
+    this.meta.drones = this.meta.drones.filter((d) => matIds.indexOf(d.uid) === -1);
+    this.meta.droneEquipped = (this.meta.droneEquipped || []).filter((x) => matIds.indexOf(x) === -1);
+
+    const created = createDroneInstance(next, 'os_attack');
+    this.meta.drones.push(created);
+    if ((this.meta.droneEquipped || []).length < this.droneSlotsMax()) {
+      this.meta.droneEquipped.push(created.uid);
+    }
+
+    this.sfx.package_();
+    this.flashScreen(0.25, droneRarityDef(next).color);
+    this.showToast('合成成功！ ' + droneRarityDef(next).name + ' ドローンを獲得', 2600);
+    this.droneAfterChange();
+    return created;
+  }
+
+  equipDroneModule(uid, moduleUid) {
+    const d = this.droneById(uid);
+    if (!d) return;
+    const slots = droneModuleSlots(d.rarity);
+    if (d.modules.length >= slots) { this.sfx.deny(); this.showToast('モジュール枠が満杯です'); return; }
+    if (d.modules.indexOf(moduleUid) >= 0) return;
+    d.modules.push(moduleUid);
+    this.sfx.buy();
+    this.droneAfterChange();
+  }
+  unequipDroneModule(uid, moduleUid) {
+    const d = this.droneById(uid);
+    if (!d) return;
+    d.modules = d.modules.filter((x) => x !== moduleUid);
+    this.droneAfterChange();
+  }
+  unlockDroneSlotWithGem() {
+    const cur = this.meta.droneSlots || 1;
+    if (cur >= DRONE_SLOT_MAX) { this.sfx.deny(); this.showToast('スロットは最大です'); return; }
+    const cost = [0, 150, 400, 900][cur] || 900;   // 2機目150 / 3機目400 / 4機目900
+    if (this.meta.gem < cost) { this.sfx.deny(); this.showToast('Gem が不足しています（' + cost + '◆）'); return; }
+    this.meta.gem -= cost;
+    this.meta.droneSlots = cur + 1;
+    this.sfx.package_();
+    this.showToast('ドローンスロットを解放しました');
+    this.droneAfterChange();
   }
 
   /** タイトル「起動する」→ 音声解放・オフライン報酬回収の上でホームへ */
@@ -7325,6 +8621,9 @@ class Game {
     this.releaseAll(this.packages, this.packagePool);
     this.lightnings.length = 0;
     this.blackholes.length = 0;
+    this.droneRuntime = [];
+    if (this.droneLasers) this.droneLasers.length = 0;
+    this.droneOverclockActive = false;
 
     this.dps = 0;
     this.dpsAccum = 0;
@@ -7591,6 +8890,7 @@ class Game {
   update(dt) {
     this.waveManager.update(dt);
     this.player.update(dt);
+    this.updateDrones(dt);
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
     this.updateEnemyProjectiles(dt);
@@ -8325,6 +9625,7 @@ class Game {
     this.drawWall(ctx);
     this.drawOrbs(ctx);
     this.drawCore(ctx);
+    this.drawDrones(ctx);
     this.drawDamageNumbers(ctx);
 
     // SUPER OVERCLOCK 中は画面全体を染める

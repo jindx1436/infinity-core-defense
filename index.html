@@ -221,6 +221,34 @@
     <div id="modules-list" class="panel-list"></div>
   </div>
 
+  <!-- ===== AIドローンパネル ===== -->
+  <div id="drone-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">AIドローン</span>
+      <span id="drone-currency">
+        <span id="val-quantum">0</span><span class="dc-unit">量子コア</span>
+      </span>
+      <button id="btn-drone-close" class="panel-close">✕</button>
+    </div>
+    <div id="drone-tabs">
+      <button class="drone-tab active" data-dtab="manage">編成</button>
+      <button class="drone-tab" data-dtab="fusion">合成</button>
+      <button class="drone-tab" data-dtab="codex">図鑑</button>
+    </div>
+    <div class="panel-note" id="drone-note"></div>
+    <div id="drone-manage" class="panel-list drone-view">
+      <div class="drone-section-title">装備スロット <span id="drone-slot-count"></span></div>
+      <div id="drone-slots"></div>
+      <div id="drone-detail"></div>
+      <div class="drone-section-title">所持ドローン <span id="drone-owned-count"></span></div>
+      <div id="drone-owned"></div>
+      <div class="drone-section-title">所持ドローンモジュール</div>
+      <div id="drone-modules-owned"></div>
+    </div>
+    <div id="drone-fusion" class="panel-list drone-view hidden"></div>
+    <div id="drone-codex" class="panel-list drone-view hidden"></div>
+  </div>
+
   <!-- ===== ガチャパネル ===== -->
   <div id="gacha-panel" class="side-panel closed">
     <div class="panel-header">
@@ -312,10 +340,11 @@
           <button class="dev-btn" data-dev="shard">+50K ◈</button>
           <button class="dev-btn" data-dev="cash">+1B $</button>
           <button class="dev-btn" data-dev="frag">+50 ◆◆</button>
+          <button class="dev-btn" data-dev="quantum">+5K 量子</button>
           <button class="dev-btn" data-dev="unlockAll">全Tier解放</button>
           <button class="dev-btn danger" data-dev="reset">通貨をゼロに</button>
         </div>
-        <div class="dev-note">FPS表示を7回タップすると表示/非表示を切り替えられます。</div>
+        <div class="dev-note">FPS表示、またはホーム画面下部のバージョン表記を3秒以内に7回タップすると、このメニューの表示/非表示を切り替えられます。</div>
       </div>
 
       <button id="btn-reset-save" class="settings-btn danger">セーブデータを初期化</button>
@@ -371,9 +400,9 @@
           <span class="ht-icon">⚔</span>
           <span class="ht-text"><span class="ht-name">究極武器</span><span class="ht-sub">Coming Soon</span></span>
         </button>
-        <button class="home-tile soon" data-home="drone">
+        <button class="home-tile" data-home="drone">
           <span class="ht-icon">⬡</span>
-          <span class="ht-text"><span class="ht-name">AIドローン</span><span class="ht-sub">Coming Soon</span></span>
+          <span class="ht-text"><span class="ht-name">AIドローン</span><span class="ht-sub">相棒を編成</span></span>
         </button>
       </div>
 
