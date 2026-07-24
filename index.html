@@ -221,6 +221,25 @@
     <div id="modules-list" class="panel-list"></div>
   </div>
 
+  <!-- ===== 究極兵装パネル ===== -->
+  <div id="ua-panel" class="side-panel closed">
+    <div class="panel-header">
+      <span class="panel-title">究極兵装</span>
+      <span id="ua-currency"><span id="val-ua-crystal">0</span><span class="dc-unit">結晶</span></span>
+      <button id="btn-ua-close" class="panel-close">✕</button>
+    </div>
+    <div class="panel-note" id="ua-note">
+      コアへ搭載する超兵器です。兵装結晶（主にボス討伐で入手）で強化します。
+    </div>
+    <div id="ua-body" class="panel-list drone-view">
+      <div class="drone-section-title">装備中 <span id="ua-slot-count"></span></div>
+      <div id="ua-slots"></div>
+      <div id="ua-detail"></div>
+      <div class="drone-section-title">保有兵装 <span id="ua-owned-count"></span></div>
+      <div id="ua-owned"></div>
+    </div>
+  </div>
+
   <!-- ===== AIドローンパネル ===== -->
   <div id="drone-panel" class="side-panel closed">
     <div class="panel-header">
@@ -341,6 +360,7 @@
           <button class="dev-btn" data-dev="cash">+1B $</button>
           <button class="dev-btn" data-dev="frag">+50 ◆◆</button>
           <button class="dev-btn" data-dev="quantum">+5K 量子</button>
+          <button class="dev-btn" data-dev="crystal">+5K 結晶</button>
           <button class="dev-btn" data-dev="unlockAll">全Tier解放</button>
           <button class="dev-btn danger" data-dev="reset">通貨をゼロに</button>
         </div>
@@ -396,9 +416,9 @@
           <span class="ht-icon">◇</span>
           <span class="ht-text"><span class="ht-name">属性コア</span><span class="ht-sub">属性変更</span></span>
         </button>
-        <button class="home-tile soon" data-home="ultimate">
+        <button class="home-tile" data-home="ultimate">
           <span class="ht-icon">⚔</span>
-          <span class="ht-text"><span class="ht-name">究極武器</span><span class="ht-sub">Coming Soon</span></span>
+          <span class="ht-text"><span class="ht-name">究極兵装</span><span class="ht-sub">コア搭載兵器</span></span>
         </button>
         <button class="home-tile" data-home="drone">
           <span class="ht-icon">⬡</span>

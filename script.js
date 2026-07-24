@@ -2441,7 +2441,7 @@ function createModule(blueprint, rarity) {
 }
 
 /** BASE_STATS へ永続研究とLAB研究の効果を適用した値を返す（周回開始時の土台） */
-function computeResearchStats(equippedModules, elementId, elementState, drones, droneModuleInv, droneOC) {
+function computeResearchStats(equippedModules, elementId, elementState, drones, droneModuleInv, droneOC, uaEntries) {
   const s = Object.assign({}, BASE_STATS);
   for (let i = 0; i < RESEARCH.length; i++) {
     const r = RESEARCH[i];
@@ -2468,6 +2468,8 @@ function computeResearchStats(equippedModules, elementId, elementState, drones, 
   }
   // AIドローンの常時効果OS・モジュール passive をプレイヤーステータスへ反映
   applyDroneStatsToPlayer(s, drones, droneModuleInv, elementId, droneOC);
+  // 究極兵装の常時効果
+  applyUaStatsToPlayer(s, uaEntries);
   return s;
 }
 
@@ -2592,6 +2594,1020 @@ function tracePolygon(ctx, x, y, r, sides, rotation) {
  * 3.5 セーブ / ロード（localStorage）
  * ======================================================= */
 
+/* =========================================================
+ * 究極兵装（Ultimate Armament） — Phase 5-C
+ *
+ * 設計方針:
+ *  - 完全データ駆動。ULTIMATE_ARMAMENTS に1オブジェクト追加するだけで
+ *    UI・保存・ロード・強化・装備・発動のすべてに対応する。
+ *  - 既存システム（ショップ/研究/LAB/モジュール/ドローン）とは独立。
+ *  - 単純な火力増加ではなく「プレイスタイルを変える」効果を持たせる。
+ *
+ * 各兵装が実装できる任意フック:
+ *   params(lv, routeId)      -> P   … レベルと進化ルートから性能値を算出
+ *   applyStats(s, P, ctx)          … プレイヤーステータスへの常時効果
+ *   init(g, rt)                    … 周回開始時の初期化
+ *   update(g, rt, dt)              … 毎フレームの挙動
+ *   draw(g, ctx, rt)               … 描画（ワールド座標）
+ *   onKill(g, rt, enemy)           … 敵撃破時
+ *   detail(P)                -> []  … 詳細画面に出す性能テキスト
+ * ======================================================= */
+
+const UA_MAX_LEVEL = 20;
+const UA_MAX_SLOTS = 3;
+/** 装備枠の解放条件（到達Wave）。index0 は初期枠 */
+const UA_SLOT_UNLOCK_WAVE = [0, 60, 120];
+
+const UA_CATEGORIES = [
+  { id: 'attack',  label: '攻撃', color: '#ff3b6b' },
+  { id: 'control', label: '制御', color: '#7fd8ff' },
+  { id: 'defense', label: '防御', color: '#3dff9e' },
+  { id: 'support', label: '支援', color: '#ffc233' },
+];
+function uaCategoryById(id) {
+  for (let i = 0; i < UA_CATEGORIES.length; i++) if (UA_CATEGORIES[i].id === id) return UA_CATEGORIES[i];
+  return UA_CATEGORIES[0];
+}
+
+/** 強化に必要な兵装結晶（通常コインでは強化できない） */
+function uaUpgradeCost(level) {
+  return Math.floor(6 * Math.pow(1.28, level - 1));
+}
+
+/* ---- 共通ヘルパ ---- */
+
+/** 最も危険な敵を選ぶ（ボス優先 → 体力とコアへの近さ） */
+function uaPickThreat(g, excludeSet) {
+  let best = null, bestScore = -1;
+  for (let i = 0; i < g.enemies.length; i++) {
+    const e = g.enemies[i];
+    if (e.hp <= 0) continue;
+    if (excludeSet && excludeSet.has(e)) continue;
+    const dx = e.x - g.cx, dy = e.y - g.cy;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+    const score = (e.isBoss ? 1e7 : 0) + e.hp * 0.4 + 4000 / dist;
+    if (score > bestScore) { bestScore = score; best = e; }
+  }
+  return best;
+}
+
+/** 点と線分の距離（レーザーの当たり判定に使う） */
+function uaSegDist(px, py, x1, y1, x2, y2) {
+  const vx = x2 - x1, vy = y2 - y1;
+  const wx = px - x1, wy = py - y1;
+  const len2 = vx * vx + vy * vy;
+  let t = len2 > 0 ? (wx * vx + wy * vy) / len2 : 0;
+  if (t < 0) t = 0; else if (t > 1) t = 1;
+  const dx = px - (x1 + vx * t), dy = py - (y1 + vy * t);
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** プレイヤーの攻撃力を基準値に使う（終盤でも陳腐化しないようにする） */
+function uaBaseAtk(g) {
+  return (g.player && g.player.stats) ? g.player.stats.damage : 5;
+}
+
+/** 演出用の時計（秒）。ゲーム内時間に依存しない見た目の揺らぎに使う */
+function uaNow() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000; }
+
+/** 画面を覆う十分な長さ（レーザー・断裂の貫通用） */
+function uaScreenReach(g) {
+  return Math.sqrt(g.width * g.width + g.height * g.height);
+}
+
+const ULTIMATE_ARMAMENTS = [
+
+  /* ===================== 軌道衛星 ===================== */
+  {
+    id: 'orbital', name: '軌道衛星', category: 'attack', icon: '✦',
+    color: '#00e5ff', stars: 5, unlockWave: 30,
+    tagline: '単体火力特化',
+    desc: 'コアの周囲を衛星が公転し、最も危険な敵へ極太レーザーを照射する。レーザーは敵を貫通する。',
+    routes: [
+      { id: 'suppress', name: '制圧型', desc: '衛星+1基／照射間隔短縮。広範囲を制圧する。' },
+      { id: 'focus',    name: '収束型', desc: 'レーザー幅と威力が大幅上昇。ボス特化。' },
+      { id: 'chain',    name: '連鎖型', desc: 'レーザーが敵から敵へ跳ねる。雑魚処理特化。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '衛星 2基' },
+      { lv: 10, text: '衛星 3基' },
+      { lv: 15, text: 'レーザー幅 増加' },
+      { lv: 20, text: '照射時間・貫通性能 強化' },
+    ],
+    params(lv, route) {
+      let count = 1 + (lv >= 5 ? 1 : 0) + (lv >= 10 ? 1 : 0);
+      let interval = Math.max(1.5, 3.4 - lv * 0.07);
+      let width = 13 + lv * 0.45 + (lv >= 15 ? 11 : 0);
+      let duration = 0.42 + (lv >= 20 ? 0.34 : 0);
+      let dps = 1.5 + lv * 0.22;         // プレイヤーATK基準の毎秒倍率
+      let bossMul = 1 + lv * 0.03;
+      let chain = 0;
+      let reach = 1;
+      if (lv >= 20) reach = 1.25;
+      if (route === 'suppress') { count += 1; interval *= 0.78; dps *= 0.82; }
+      else if (route === 'focus') { width *= 1.75; dps *= 1.55; bossMul += 0.5; interval *= 1.1; }
+      else if (route === 'chain') { chain = 2 + Math.floor(lv / 8); dps *= 0.7; width *= 0.85; }
+      return { count, interval, width, duration, dps, bossMul, chain, reach };
+    },
+    detail(P) {
+      return [
+        '衛星 ' + P.count + '基 / 照射間隔 ' + P.interval.toFixed(2) + '秒',
+        'レーザー幅 ' + P.width.toFixed(0) + ' / 照射 ' + P.duration.toFixed(2) + '秒',
+        '威力 ATK×' + P.dps.toFixed(2) + '/秒 (貫通)',
+        'ボス与ダメ ×' + P.bossMul.toFixed(2) + (P.chain ? ' / 跳弾 ' + P.chain : ''),
+      ];
+    },
+    init(g, rt) {
+      rt.st.sats = [];
+      for (let i = 0; i < rt.P.count; i++) {
+        rt.st.sats.push({ angle: (i / rt.P.count) * TAU, r: 92 + i * 16 });
+      }
+      rt.st.cd = 1.2;
+      rt.st.beams = [];
+    },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      // 衛星数がレベルで変わるため、必要に応じて作り直す
+      if (st.sats.length !== P.count) this.init(g, rt);
+
+      for (let i = 0; i < st.sats.length; i++) {
+        st.sats[i].angle += dt * (0.55 + i * 0.05);
+      }
+
+      // 照射
+      st.cd -= dt;
+      if (st.cd <= 0) {
+        const target = uaPickThreat(g);
+        if (target) {
+          st.cd = P.interval;
+          this.fire(g, rt, target);
+        } else {
+          st.cd = 0.15;
+        }
+      }
+
+      // ビームの持続ダメージ
+      const reach = uaScreenReach(g) * P.reach;
+      for (let i = st.beams.length - 1; i >= 0; i--) {
+        const b = st.beams[i];
+        b.life -= dt;
+        b.tick -= dt;
+        if (b.tick <= 0) {
+          b.tick = 0.08;
+          const dmgPerTick = uaBaseAtk(g) * P.dps * 0.08 * (b.mul || 1);
+          const half = b.width * 0.5;
+          for (let j = 0; j < g.enemies.length; j++) {
+            const e = g.enemies[j];
+            if (e.hp <= 0) continue;
+            if (uaSegDist(e.x, e.y, b.x1, b.y1, b.x2, b.y2) <= half + e.size * 0.5) {
+              const mul = e.isBoss ? P.bossMul : 1;
+              g.damageEnemy(e, dmgPerTick * mul, 0, false);
+            }
+          }
+        }
+        if (b.life <= 0) st.beams.splice(i, 1);
+      }
+      void reach;
+    },
+    fire(g, rt, target) {
+      const P = rt.P, st = rt.st;
+      // 目標に最も近い衛星から撃つ
+      let sat = st.sats[0], bestD = Infinity;
+      for (let i = 0; i < st.sats.length; i++) {
+        const s = st.sats[i];
+        const sx = g.cx + Math.cos(s.angle) * s.r, sy = g.cy + Math.sin(s.angle) * s.r;
+        const d = (sx - target.x) ** 2 + (sy - target.y) ** 2;
+        if (d < bestD) { bestD = d; sat = s; }
+      }
+      const x1 = g.cx + Math.cos(sat.angle) * sat.r;
+      const y1 = g.cy + Math.sin(sat.angle) * sat.r;
+      const ang = Math.atan2(target.y - y1, target.x - x1);
+      const reach = uaScreenReach(g) * P.reach;
+      this.addBeam(g, rt, x1, y1, x1 + Math.cos(ang) * reach, y1 + Math.sin(ang) * reach, P.width, 1);
+
+      // 連鎖型: 命中した敵から近くの敵へ跳ねる
+      if (P.chain > 0) {
+        let from = target;
+        const used = new Set([target]);
+        for (let c = 0; c < P.chain; c++) {
+          let next = null, nd = 220 * 220;
+          for (let j = 0; j < g.enemies.length; j++) {
+            const e = g.enemies[j];
+            if (e.hp <= 0 || used.has(e)) continue;
+            const d = (e.x - from.x) ** 2 + (e.y - from.y) ** 2;
+            if (d < nd) { nd = d; next = e; }
+          }
+          if (!next) break;
+          used.add(next);
+          this.addBeam(g, rt, from.x, from.y, next.x, next.y, P.width * 0.6, 0.6);
+          from = next;
+        }
+      }
+
+      // 演出
+      g.spawnParticles(x1, y1, 14, 210, 0.4, 3, this.color);
+      g.flashScreen(0.10, this.color);
+      g.shakeScreen(5);
+      g.sfx.unlockTier();
+    },
+    addBeam(g, rt, x1, y1, x2, y2, width, mul) {
+      rt.st.beams.push({
+        x1, y1, x2, y2, width, mul,
+        life: rt.P.duration, maxLife: rt.P.duration, tick: 0,
+      });
+    },
+    draw(g, ctx, rt) {
+      const st = rt.st;
+      // 衛星本体
+      for (let i = 0; i < st.sats.length; i++) {
+        const s = st.sats[i];
+        const x = g.cx + Math.cos(s.angle) * s.r;
+        const y = g.cy + Math.sin(s.angle) * s.r;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(s.angle * 1.6);
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-7, -3.5, 14, 7);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillRect(-2.5, -1.5, 5, 3);
+        ctx.shadowBlur = 0;
+        // ソーラーパネル
+        ctx.globalAlpha = 0.75;
+        ctx.fillStyle = this.color;
+        ctx.fillRect(-13, -1.4, 5, 2.8);
+        ctx.fillRect(8, -1.4, 5, 2.8);
+        ctx.restore();
+      }
+      ctx.globalAlpha = 1;
+
+      // レーザー（多重ストロークで極太＆発光させる）
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+      for (let i = 0; i < st.beams.length; i++) {
+        const b = st.beams[i];
+        const t = Math.max(0, b.life / b.maxLife);
+        // 立ち上がりを速く、消え際をなめらかに
+        const a = t > 0.85 ? (1 - t) / 0.15 : t / 0.85;
+        const w = b.width * (0.55 + 0.45 * a);
+
+        ctx.globalAlpha = 0.16 * a;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = w * 2.1;
+        ctx.beginPath(); ctx.moveTo(b.x1, b.y1); ctx.lineTo(b.x2, b.y2); ctx.stroke();
+
+        ctx.globalAlpha = 0.4 * a;
+        ctx.lineWidth = w;
+        ctx.beginPath(); ctx.moveTo(b.x1, b.y1); ctx.lineTo(b.x2, b.y2); ctx.stroke();
+
+        ctx.globalAlpha = 0.95 * a;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(1.5, w * 0.28);
+        ctx.beginPath(); ctx.moveTo(b.x1, b.y1); ctx.lineTo(b.x2, b.y2); ctx.stroke();
+
+        // 発射点のフレア
+        ctx.globalAlpha = 0.8 * a;
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath(); ctx.arc(b.x1, b.y1, w * 0.55, 0, TAU); ctx.fill();
+        ctx.globalAlpha = 0.35 * a;
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.arc(b.x1, b.y1, w * 1.15, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== 電磁パルス ===================== */
+  {
+    id: 'emp', name: '電磁パルス', category: 'control', icon: '⚡',
+    color: '#8df3ff', stars: 5, unlockWave: 45,
+    tagline: '妨害・安全確保',
+    desc: '一定時間ごとにEMPを放ち、敵をスタンさせ移動速度を落とす。上位では被ダメージ増加デバフを付与する。',
+    routes: [
+      { id: 'wide',   name: '広域型', desc: '効果範囲と発動頻度が上昇。' },
+      { id: 'deep',   name: '制圧型', desc: 'スタン時間が大幅上昇。ボスにも通る。' },
+      { id: 'shock',  name: '過負荷型', desc: 'EMPの直接ダメージと被ダメ増加が上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: 'スタン時間 上昇' },
+      { lv: 10, text: 'ボスにも有効（効果減）' },
+      { lv: 15, text: '発動間隔 短縮' },
+      { lv: 20, text: 'EMP中の被ダメージ増加' },
+    ],
+    params(lv, route) {
+      let interval = Math.max(4.5, 11 - lv * 0.28);
+      let radius = 190 + lv * 9;
+      let stun = 0.7 + lv * 0.075;
+      let slow = 0.25 + lv * 0.015;
+      let dmg = 1.2 + lv * 0.18;
+      let bossRate = lv >= 10 ? 0.35 : 0;
+      let amp = lv >= 20 ? 0.25 : 0;
+      if (route === 'wide') { radius *= 1.4; interval *= 0.78; stun *= 0.85; }
+      else if (route === 'deep') { stun *= 1.7; bossRate = Math.max(bossRate, 0.45); }
+      else if (route === 'shock') { dmg *= 2.0; amp += 0.2; }
+      return { interval, radius, stun, slow, dmg, bossRate, amp };
+    },
+    detail(P) {
+      return [
+        '発動間隔 ' + P.interval.toFixed(1) + '秒 / 範囲 ' + P.radius.toFixed(0),
+        'スタン ' + P.stun.toFixed(2) + '秒 / 減速 ' + (P.slow * 100).toFixed(0) + '%',
+        'ダメージ ATK×' + P.dmg.toFixed(2),
+        P.bossRate > 0 ? 'ボスへ ' + (P.bossRate * 100).toFixed(0) + '%の効果' : 'ボスには無効',
+        P.amp > 0 ? '被ダメージ +' + (P.amp * 100).toFixed(0) + '%' : '',
+      ].filter(Boolean);
+    },
+    init(g, rt) { rt.st.cd = 2.5; rt.st.fx = 0; rt.st.fxR = 0; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      if (st.fx > 0) st.fx -= dt;
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      st.cd = P.interval;
+      st.fx = 0.55; st.fxR = P.radius;
+
+      const dmg = uaBaseAtk(g) * P.dmg;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0) continue;
+        const dx = e.x - g.cx, dy = e.y - g.cy;
+        if (dx * dx + dy * dy > P.radius * P.radius) continue;
+        const rate = e.isBoss ? P.bossRate : 1;
+        if (rate <= 0) continue;
+        e.stunTimer = Math.max(e.stunTimer, P.stun * rate);
+        e.chill = Math.min(e.chill + P.slow * rate, e.slowMax || 0.8);
+        e.chillTimer = Math.max(e.chillTimer, 2.2);
+        if (P.amp > 0) { e.uaAmp = P.amp * rate; e.uaAmpTimer = P.stun * rate + 1.5; }
+        g.damageEnemy(e, dmg * rate, 0, false);
+      }
+      g.spawnShockwave(g.cx, g.cy, P.radius, this.color);
+      g.flashScreen(0.16, this.color);
+      g.shakeScreen(6);
+      g.sfx.overclock();
+    },
+    draw(g, ctx, rt) {
+      const st = rt.st;
+      if (st.fx <= 0) return;
+      const t = st.fx / 0.55;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = t * 0.5;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 3 + (1 - t) * 5;
+      ctx.beginPath(); ctx.arc(g.cx, g.cy, st.fxR * (1 - t * 0.85), 0, TAU); ctx.stroke();
+      ctx.globalAlpha = t * 0.22;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(g.cx, g.cy, st.fxR, 0, TAU); ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== 重力反転 ===================== */
+  {
+    id: 'gravity', name: '重力反転', category: 'control', icon: '◉',
+    color: '#a561ff', stars: 5, unlockWave: 55,
+    tagline: '緊急防衛',
+    desc: '重力を反転させ、接近した敵を外周へ吹き飛ばす。コア周辺を強制的に safe zone にする。',
+    routes: [
+      { id: 'push',   name: '斥力型', desc: '吹き飛ばし距離と範囲が上昇。' },
+      { id: 'crush',  name: '圧壊型', desc: '吹き飛ばし時のダメージが大幅上昇。' },
+      { id: 'rapid',  name: '高速型', desc: '発動頻度が大幅上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '吹き飛ばし距離 上昇' },
+      { lv: 10, text: '発動間隔 短縮' },
+      { lv: 15, text: 'ダメージ 上昇' },
+      { lv: 20, text: 'ボスにも僅かに有効' },
+    ],
+    params(lv, route) {
+      let interval = Math.max(3.2, 8.5 - lv * 0.24);
+      let radius = 150 + lv * 7;
+      let push = 120 + lv * 11;
+      let dmg = 1.0 + lv * 0.15;
+      let bossPush = lv >= 20 ? 0.25 : 0;
+      if (route === 'push') { push *= 1.6; radius *= 1.25; }
+      else if (route === 'crush') { dmg *= 2.2; }
+      else if (route === 'rapid') { interval *= 0.62; push *= 0.85; }
+      return { interval, radius, push, dmg, bossPush };
+    },
+    detail(P) {
+      return [
+        '発動間隔 ' + P.interval.toFixed(1) + '秒 / 範囲 ' + P.radius.toFixed(0),
+        '吹き飛ばし ' + P.push.toFixed(0),
+        'ダメージ ATK×' + P.dmg.toFixed(2),
+        P.bossPush > 0 ? 'ボスへ ' + (P.bossPush * 100).toFixed(0) + '%の吹き飛ばし' : 'ボスは吹き飛ばせない',
+      ];
+    },
+    init(g, rt) { rt.st.cd = 3; rt.st.fx = 0; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      if (st.fx > 0) st.fx -= dt;
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      st.cd = P.interval;
+      st.fx = 0.5;
+      const dmg = uaBaseAtk(g) * P.dmg;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0) continue;
+        const dx = e.x - g.cx, dy = e.y - g.cy;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > P.radius * P.radius) continue;
+        const d = Math.sqrt(d2) || 1;
+        const rate = e.isBoss ? P.bossPush : 1;
+        if (rate > 0) {
+          e.x += (dx / d) * P.push * rate;
+          e.y += (dy / d) * P.push * rate;
+        }
+        g.damageEnemy(e, dmg, 0, false);
+        g.spawnParticles(e.x, e.y, 3, 120, 0.3, 2, this.color);
+      }
+      g.spawnShockwave(g.cx, g.cy, P.radius, this.color);
+      g.shakeScreen(7);
+      g.sfx.overclock();
+    },
+    draw(g, ctx, rt) {
+      const st = rt.st;
+      if (st.fx <= 0) return;
+      const t = st.fx / 0.5;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = t * 0.4;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 3; i++) {
+        const r = rt.P.radius * (0.4 + i * 0.3) * (1 + (1 - t) * 0.35);
+        ctx.beginPath(); ctx.arc(g.cx, g.cy, r, 0, TAU); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== 次元断裂 ===================== */
+  {
+    id: 'rift', name: '次元断裂', category: 'attack', icon: '✕',
+    color: '#ff2d95', stars: 5, unlockWave: 70,
+    tagline: '直線殲滅',
+    desc: '空間を一直線に切り裂き、線上の敵へ大ダメージを与える。レベルで 一文字→十字→X字→星型 へ進化する。',
+    routes: [
+      { id: 'blade',  name: '斬撃型', desc: '断裂の本数が増加。' },
+      { id: 'heavy',  name: '重断型', desc: '1本あたりの威力と幅が上昇。' },
+      { id: 'quick',  name: '連斬型', desc: '発動間隔が短縮。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '十字（2本）' },
+      { lv: 10, text: 'X字（4本）' },
+      { lv: 15, text: '星型（6本）' },
+      { lv: 20, text: '威力・幅 大幅上昇' },
+    ],
+    params(lv, route) {
+      let lines = 1;
+      if (lv >= 15) lines = 6; else if (lv >= 10) lines = 4; else if (lv >= 5) lines = 2;
+      let interval = Math.max(3.0, 7.5 - lv * 0.2);
+      let width = 20 + lv * 0.8 + (lv >= 20 ? 14 : 0);
+      let dmg = 3.5 + lv * 0.55 + (lv >= 20 ? 6 : 0);
+      if (route === 'blade') { lines += 2; dmg *= 0.8; }
+      else if (route === 'heavy') { dmg *= 1.6; width *= 1.4; interval *= 1.15; }
+      else if (route === 'quick') { interval *= 0.65; dmg *= 0.85; }
+      return { lines, interval, width, dmg };
+    },
+    detail(P) {
+      return [
+        '断裂 ' + P.lines + '本 / 発動間隔 ' + P.interval.toFixed(1) + '秒',
+        '幅 ' + P.width.toFixed(0),
+        '威力 ATK×' + P.dmg.toFixed(2),
+      ];
+    },
+    init(g, rt) { rt.st.cd = 2.2; rt.st.slashes = []; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      for (let i = st.slashes.length - 1; i >= 0; i--) {
+        st.slashes[i].life -= dt;
+        if (st.slashes[i].life <= 0) st.slashes.splice(i, 1);
+      }
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      st.cd = P.interval;
+
+      const reach = uaScreenReach(g);
+      const base = Math.random() * TAU;
+      const dmg = uaBaseAtk(g) * P.dmg;
+      for (let i = 0; i < P.lines; i++) {
+        const ang = base + (i / P.lines) * Math.PI;   // 直線なのでπで一周
+        const x1 = g.cx - Math.cos(ang) * reach, y1 = g.cy - Math.sin(ang) * reach;
+        const x2 = g.cx + Math.cos(ang) * reach, y2 = g.cy + Math.sin(ang) * reach;
+        st.slashes.push({ x1, y1, x2, y2, life: 0.4, maxLife: 0.4 });
+        const half = P.width * 0.5;
+        for (let j = 0; j < g.enemies.length; j++) {
+          const e = g.enemies[j];
+          if (e.hp <= 0) continue;
+          if (uaSegDist(e.x, e.y, x1, y1, x2, y2) <= half + e.size * 0.5) {
+            g.damageEnemy(e, dmg, 1, true);
+          }
+        }
+      }
+      g.flashScreen(0.2, this.color);
+      g.shakeScreen(9);
+      g.sfx.superOverclock();
+    },
+    draw(g, ctx, rt) {
+      const st = rt.st;
+      if (!st.slashes.length) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineCap = 'round';
+      for (let i = 0; i < st.slashes.length; i++) {
+        const s = st.slashes[i];
+        const t = s.life / s.maxLife;
+        const w = rt.P.width * t;
+        ctx.globalAlpha = 0.28 * t;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = w * 1.8;
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+        ctx.globalAlpha = 0.95 * t;
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = Math.max(1.2, w * 0.22);
+        ctx.beginPath(); ctx.moveTo(s.x1, s.y1); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== ミサイル飽和攻撃 ===================== */
+  {
+    id: 'missile', name: 'ミサイル飽和攻撃', category: 'attack', icon: '➹',
+    color: '#ff7a3d', stars: 4, unlockWave: 85,
+    tagline: '範囲殲滅',
+    desc: 'コアから大量のミサイルを一斉発射し、着弾地点を爆破する。雑魚の一掃に優れる。',
+    routes: [
+      { id: 'swarm',  name: '飽和型', desc: '発射数が大幅増加。' },
+      { id: 'heavy',  name: '重弾頭型', desc: '爆発範囲と威力が上昇。' },
+      { id: 'hunter', name: '追尾型', desc: 'ボスへの追加弾と威力が上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '発射数 増加' },
+      { lv: 10, text: '爆発範囲 拡大' },
+      { lv: 15, text: '発射間隔 短縮' },
+      { lv: 20, text: 'ボスへ追加弾' },
+    ],
+    params(lv, route) {
+      let count = 3 + Math.floor(lv / 2);
+      let interval = Math.max(3.5, 9 - lv * 0.25);
+      let radius = 44 + lv * 1.8;
+      let dmg = 2.0 + lv * 0.3;
+      let bossExtra = lv >= 20 ? 4 : 0;
+      if (route === 'swarm') { count = Math.floor(count * 1.7); dmg *= 0.8; }
+      else if (route === 'heavy') { radius *= 1.5; dmg *= 1.5; count = Math.floor(count * 0.8); }
+      else if (route === 'hunter') { bossExtra += 4; dmg *= 1.2; }
+      return { count, interval, radius, dmg, bossExtra };
+    },
+    detail(P) {
+      return [
+        '発射数 ' + P.count + '発 / 発射間隔 ' + P.interval.toFixed(1) + '秒',
+        '爆発範囲 ' + P.radius.toFixed(0),
+        '威力 ATK×' + P.dmg.toFixed(2),
+        P.bossExtra > 0 ? 'ボスへ追加 ' + P.bossExtra + '発' : '',
+      ].filter(Boolean);
+    },
+    init(g, rt) { rt.st.cd = 2.8; rt.st.missiles = []; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      // 飛翔中のミサイル
+      for (let i = st.missiles.length - 1; i >= 0; i--) {
+        const m = st.missiles[i];
+        m.t += dt / m.dur;
+        if (m.t >= 1) {
+          this.explode(g, rt, m.tx, m.ty);
+          st.missiles.splice(i, 1);
+          continue;
+        }
+        // 弧を描いて着弾させる
+        m.x = m.sx + (m.tx - m.sx) * m.t;
+        m.y = m.sy + (m.ty - m.sy) * m.t - Math.sin(m.t * Math.PI) * m.arc;
+      }
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      if (g.enemies.length === 0) { st.cd = 0.4; return; }
+      st.cd = P.interval;
+
+      let n = P.count;
+      const boss = g.enemies.find((e) => e.isBoss && e.hp > 0);
+      for (let i = 0; i < n; i++) {
+        const e = g.enemies[Math.floor(Math.random() * g.enemies.length)];
+        if (!e || e.hp <= 0) continue;
+        this.launch(g, rt, e.x, e.y, i * 0.04);
+      }
+      if (boss && P.bossExtra > 0) {
+        for (let i = 0; i < P.bossExtra; i++) this.launch(g, rt, boss.x, boss.y, i * 0.05);
+      }
+      g.sfx.overclock();
+    },
+    launch(g, rt, tx, ty, delay) {
+      rt.st.missiles.push({
+        sx: g.cx, sy: g.cy, x: g.cx, y: g.cy,
+        tx: tx + (Math.random() - 0.5) * 30, ty: ty + (Math.random() - 0.5) * 30,
+        t: -delay / 0.6, dur: 0.6 + Math.random() * 0.2,
+        arc: 60 + Math.random() * 70,
+      });
+    },
+    explode(g, rt, x, y) {
+      const P = rt.P;
+      const dmg = uaBaseAtk(g) * P.dmg;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0) continue;
+        const dx = e.x - x, dy = e.y - y;
+        if (dx * dx + dy * dy <= P.radius * P.radius) g.damageEnemy(e, dmg, 0, false);
+      }
+      g.spawnShockwave(x, y, P.radius, this.color);
+      g.spawnParticles(x, y, 8, 150, 0.35, 3, this.color);
+      g.shakeScreen(2.5);
+    },
+    draw(g, ctx, rt) {
+      const st = rt.st;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < st.missiles.length; i++) {
+        const m = st.missiles[i];
+        if (m.t < 0) continue;
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = this.color;
+        ctx.beginPath(); ctx.arc(m.x, m.y, 3.2, 0, TAU); ctx.fill();
+        ctx.globalAlpha = 0.3;
+        ctx.beginPath(); ctx.arc(m.x, m.y, 7, 0, TAU); ctx.fill();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== ナノマシン ===================== */
+  {
+    id: 'nano', name: 'ナノマシン', category: 'attack', icon: '❈',
+    color: '#3dff9e', stars: 4, unlockWave: 100,
+    tagline: '継続ダメージ・感染',
+    desc: '敵へナノマシンを感染させ継続ダメージを与える。感染した敵を倒すと周囲へ感染が拡大する。',
+    routes: [
+      { id: 'virus',   name: '増殖型', desc: '感染拡大数と感染率が上昇。' },
+      { id: 'toxin',   name: '毒性型', desc: '継続ダメージが大幅上昇。' },
+      { id: 'blast',   name: '爆散型', desc: '感染死時に爆発ダメージ。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '感染率 上昇' },
+      { lv: 10, text: '継続時間 延長' },
+      { lv: 15, text: '拡大数 増加' },
+      { lv: 20, text: 'DoT倍率 大幅上昇' },
+    ],
+    params(lv, route) {
+      let interval = Math.max(1.6, 4.2 - lv * 0.13);
+      let dps = 0.55 + lv * 0.09 + (lv >= 20 ? 1.2 : 0);
+      let dur = 3 + lv * 0.16 + (lv >= 10 ? 1.5 : 0);
+      let spread = 1 + (lv >= 15 ? 1 : 0);
+      let seeds = 1 + Math.floor(lv / 7);
+      let blast = 0;
+      if (route === 'virus') { spread += 2; seeds += 2; }
+      else if (route === 'toxin') { dps *= 1.9; }
+      else if (route === 'blast') { blast = 2.5 + lv * 0.3; }
+      return { interval, dps, dur, spread, seeds, blast };
+    },
+    detail(P) {
+      return [
+        '感染間隔 ' + P.interval.toFixed(1) + '秒 / 同時 ' + P.seeds + '体',
+        'DoT ATK×' + P.dps.toFixed(2) + '/秒 / ' + P.dur.toFixed(1) + '秒',
+        '撃破時の拡大 ' + P.spread + '体',
+        P.blast > 0 ? '感染死で爆発 ATK×' + P.blast.toFixed(1) : '',
+      ].filter(Boolean);
+    },
+    init(g, rt) { rt.st.cd = 1.5; rt.st.tick = 0; },
+    infect(g, rt, e) {
+      if (!e || e.hp <= 0) return;
+      e.uaNanoTimer = rt.P.dur;
+      e.uaNanoDps = uaBaseAtk(g) * rt.P.dps;
+    },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      // 感染の継続ダメージ
+      st.tick -= dt;
+      const doTick = st.tick <= 0;
+      if (doTick) st.tick = 0.25;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0 || !e.uaNanoTimer || e.uaNanoTimer <= 0) continue;
+        e.uaNanoTimer -= dt;
+        if (doTick) {
+          g.damageEnemy(e, (e.uaNanoDps || 0) * 0.25, 0, false);
+          if (Math.random() < 0.4) g.spawnParticles(e.x, e.y, 1, 40, 0.35, 2, this.color);
+        }
+      }
+      // 新規感染
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      st.cd = P.interval;
+      let seeded = 0;
+      for (let i = 0; i < g.enemies.length && seeded < P.seeds; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0 || (e.uaNanoTimer > 0)) continue;
+        this.infect(g, rt, e);
+        seeded++;
+      }
+    },
+    onKill(g, rt, enemy) {
+      if (!enemy.uaNanoTimer || enemy.uaNanoTimer <= 0) return;
+      const P = rt.P;
+      if (P.blast > 0) {
+        const dmg = uaBaseAtk(g) * P.blast;
+        for (let i = 0; i < g.enemies.length; i++) {
+          const e = g.enemies[i];
+          if (e.hp <= 0) continue;
+          const dx = e.x - enemy.x, dy = e.y - enemy.y;
+          if (dx * dx + dy * dy <= 90 * 90) g.damageEnemy(e, dmg, 0, false);
+        }
+        g.spawnShockwave(enemy.x, enemy.y, 90, this.color);
+      }
+      // 周囲へ感染を拡大
+      let spread = 0;
+      for (let i = 0; i < g.enemies.length && spread < P.spread; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0 || e.uaNanoTimer > 0) continue;
+        const dx = e.x - enemy.x, dy = e.y - enemy.y;
+        if (dx * dx + dy * dy <= 150 * 150) { this.infect(g, rt, e); spread++; }
+      }
+      g.spawnParticles(enemy.x, enemy.y, 6, 110, 0.4, 2, this.color);
+    },
+    draw(g, ctx, rt) {
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0 || !e.uaNanoTimer || e.uaNanoTimer <= 0) continue;
+        ctx.globalAlpha = 0.35 + Math.sin(uaNow() * 8 + i) * 0.15;
+        ctx.strokeStyle = this.color;
+        ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(e.x, e.y, e.size + 4, 0, TAU); ctx.stroke();
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== 時空歪曲 ===================== */
+  {
+    id: 'timewarp', name: '時空歪曲', category: 'control', icon: '◷',
+    color: '#7fd8ff', stars: 4, unlockWave: 115,
+    tagline: '敵のみ減速',
+    desc: 'コアの周囲の時間を歪め、敵だけを常時減速させる。自分の速度は変わらない。ボスは影響を軽減する。',
+    routes: [
+      { id: 'field',  name: '広域型', desc: '効果範囲が拡大。' },
+      { id: 'freeze', name: '停滞型', desc: '減速率が大幅上昇。' },
+      { id: 'weak',   name: '脆弱型', desc: '減速中の敵への与ダメージが上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '減速 強化' },
+      { lv: 10, text: '効果範囲 拡大' },
+      { lv: 15, text: '減速 さらに強化' },
+      { lv: 20, text: 'ほぼ停止させる' },
+    ],
+    params(lv, route) {
+      let slow = Math.min(0.9, 0.28 + lv * 0.031);
+      let radius = 210 + lv * 11;
+      let bossRate = 0.4;
+      let ampl = 0;
+      if (route === 'field') { radius *= 1.45; slow *= 0.9; }
+      else if (route === 'freeze') { slow = Math.min(0.92, slow * 1.25); bossRate = 0.5; }
+      else if (route === 'weak') { ampl = 0.15 + lv * 0.01; }
+      return { slow, radius, bossRate, ampl };
+    },
+    detail(P) {
+      return [
+        '減速 ' + (P.slow * 100).toFixed(0) + '% / 範囲 ' + P.radius.toFixed(0),
+        'ボスへ ' + (P.bossRate * 100).toFixed(0) + '%の効果',
+        P.ampl > 0 ? '減速中の敵への与ダメージ +' + (P.ampl * 100).toFixed(0) + '%' : '',
+      ].filter(Boolean);
+    },
+    update(g, rt, dt) {
+      const P = rt.P;
+      for (let i = 0; i < g.enemies.length; i++) {
+        const e = g.enemies[i];
+        if (e.hp <= 0) continue;
+        const dx = e.x - g.cx, dy = e.y - g.cy;
+        if (dx * dx + dy * dy > P.radius * P.radius) continue;
+        const rate = e.isBoss ? P.bossRate : 1;
+        e.slowMax = Math.max(e.slowMax || 0.8, Math.min(0.92, P.slow * rate));
+        e.chill = Math.max(e.chill, P.slow * rate);
+        e.chillTimer = Math.max(e.chillTimer, 0.4);
+        if (P.ampl > 0) { e.uaAmp = Math.max(e.uaAmp || 0, P.ampl); e.uaAmpTimer = 0.5; }
+      }
+    },
+    draw(g, ctx, rt) {
+      ctx.save();
+      ctx.globalAlpha = 0.10 + Math.sin(uaNow() * 1.6) * 0.03;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([10, 14]);
+      ctx.beginPath(); ctx.arc(g.cx, g.cy, rt.P.radius, 0, TAU); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+
+  /* ===================== 自己修復システム ===================== */
+  {
+    id: 'repair', name: '自己修復システム', category: 'defense', icon: '✚',
+    color: '#3dff9e', stars: 3, unlockWave: 40,
+    tagline: '耐久型',
+    desc: 'コアが常時自己修復する。一定間隔で大きく回復し、防御力も上昇する。',
+    routes: [
+      { id: 'regen',  name: '再生型', desc: '常時回復量が大幅上昇。' },
+      { id: 'burst',  name: '緊急型', desc: '間欠回復が大幅上昇。' },
+      { id: 'armor',  name: '装甲型', desc: '防御力と最大HPが上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '常時回復 上昇' },
+      { lv: 10, text: '緊急修復 上昇' },
+      { lv: 15, text: '防御力 上昇' },
+      { lv: 20, text: '最大HP 上昇' },
+    ],
+    params(lv, route) {
+      let regen = 2.5 + lv * 0.9;
+      let burst = 0.02 + lv * 0.004;      // 最大HPに対する割合
+      let interval = Math.max(4, 10 - lv * 0.25);
+      let def = lv >= 15 ? 10 + lv * 1.2 : 0;
+      let hpMul = lv >= 20 ? 0.12 : 0;
+      if (route === 'regen') regen *= 1.9;
+      else if (route === 'burst') { burst *= 2.0; interval *= 0.8; }
+      else if (route === 'armor') { def = (def || 8) * 2.0; hpMul += 0.1; }
+      return { regen, burst, interval, def, hpMul };
+    },
+    detail(P) {
+      return [
+        '常時回復 ' + P.regen.toFixed(1) + '/秒',
+        '緊急修復 最大HPの ' + (P.burst * 100).toFixed(1) + '% / ' + P.interval.toFixed(1) + '秒',
+        P.def > 0 ? '防御力 +' + P.def.toFixed(0) : '',
+        P.hpMul > 0 ? '最大HP +' + (P.hpMul * 100).toFixed(0) + '%' : '',
+      ].filter(Boolean);
+    },
+    applyStats(s, P) {
+      s.hpRegen += P.regen;
+      if (P.def) s.defense += P.def;
+      if (P.hpMul) s.hpMul += P.hpMul;
+    },
+    init(g, rt) { rt.st.cd = rt.P.interval; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      st.cd -= dt;
+      if (st.cd > 0) return;
+      st.cd = P.interval;
+      const heal = g.player.stats.maxHp * P.burst;
+      g.player.heal(heal);
+      g.spawnParticles(g.cx, g.cy, 10, 90, 0.6, 3, this.color);
+    },
+  },
+
+  /* ===================== 資源変換炉 ===================== */
+  {
+    id: 'converter', name: '資源変換炉', category: 'support', icon: '⬢',
+    color: '#ffc233', stars: 3, unlockWave: 50,
+    tagline: '経済特化',
+    desc: 'Coin/Cash獲得を増やし、周回中に余剰資源を兵装結晶へ変換する。長時間プレイ向け。',
+    routes: [
+      { id: 'coin',    name: '採掘型', desc: 'Coin獲得が大幅上昇。' },
+      { id: 'cash',    name: '精錬型', desc: 'Cash獲得が大幅上昇。' },
+      { id: 'crystal', name: '結晶型', desc: '兵装結晶の変換効率が大幅上昇。' },
+    ],
+    milestones: [
+      { lv: 5,  text: 'Coin獲得 上昇' },
+      { lv: 10, text: 'Cash獲得 上昇' },
+      { lv: 15, text: '結晶変換 効率上昇' },
+      { lv: 20, text: '全効果 大幅上昇' },
+    ],
+    params(lv, route) {
+      let coin = 0.08 + lv * 0.022 + (lv >= 20 ? 0.2 : 0);
+      let cash = 0.12 + lv * 0.03 + (lv >= 20 ? 0.25 : 0);
+      let crystalRate = (0.004 + lv * 0.0011) * (lv >= 15 ? 1.5 : 1);
+      if (route === 'coin') coin *= 1.9;
+      else if (route === 'cash') cash *= 1.9;
+      else if (route === 'crystal') crystalRate *= 2.4;
+      return { coin, cash, crystalRate };
+    },
+    detail(P) {
+      return [
+        'Coin +' + (P.coin * 100).toFixed(0) + '%',
+        'Cash +' + (P.cash * 100).toFixed(0) + '%',
+        '兵装結晶 変換 ' + (P.crystalRate * 60).toFixed(2) + '/分',
+      ];
+    },
+    applyStats(s, P) {
+      s.coinBonus += P.coin;
+      s.cashBonus += P.cash;
+    },
+    init(g, rt) { rt.st.acc = 0; },
+    update(g, rt, dt) {
+      const st = rt.st;
+      st.acc += rt.P.crystalRate * dt;
+      if (st.acc >= 1) {
+        const n = Math.floor(st.acc);
+        st.acc -= n;
+        g.addUaCrystals(n);
+      }
+    },
+  },
+
+  /* ===================== オーバードライブ ===================== */
+  {
+    id: 'overdrive', name: 'オーバードライブ', category: 'support', icon: '⏵',
+    color: '#ff2d95', stars: 4, unlockWave: 130,
+    tagline: '全能力強化',
+    desc: '一定時間ごとに全能力が跳ね上がる。攻撃速度・攻撃力・ドローン速度が上昇し、終了後はクールタイムに入る。',
+    routes: [
+      { id: 'long',   name: '持続型', desc: '効果時間が大幅上昇。' },
+      { id: 'power',  name: '出力型', desc: '強化倍率が大幅上昇。' },
+      { id: 'cycle',  name: '循環型', desc: 'クールタイムが大幅短縮。' },
+    ],
+    milestones: [
+      { lv: 5,  text: '効果時間 延長' },
+      { lv: 10, text: '強化倍率 上昇' },
+      { lv: 15, text: 'クールタイム短縮' },
+      { lv: 20, text: '全効果 大幅上昇' },
+    ],
+    params(lv, route) {
+      let dur = 4 + lv * 0.32 + (lv >= 20 ? 3 : 0);
+      let cd = Math.max(10, 26 - lv * 0.5);
+      let aspd = 0.25 + lv * 0.028 + (lv >= 20 ? 0.25 : 0);
+      let dmg = 0.15 + lv * 0.022;
+      if (route === 'long') dur *= 1.7;
+      else if (route === 'power') { aspd *= 1.5; dmg *= 1.8; }
+      else if (route === 'cycle') cd *= 0.55;
+      return { dur, cd, aspd, dmg };
+    },
+    detail(P) {
+      return [
+        '効果時間 ' + P.dur.toFixed(1) + '秒 / 間隔 ' + P.cd.toFixed(1) + '秒',
+        '攻撃速度 +' + (P.aspd * 100).toFixed(0) + '%',
+        '攻撃力 +' + (P.dmg * 100).toFixed(0) + '%',
+      ];
+    },
+    // active は runtime 側で管理し、recalc 経由でステータスへ反映する
+    applyStats(s, P, ctx) {
+      if (!ctx || !ctx.active) return;
+      s.attackInterval = s.attackInterval / (1 + P.aspd);
+      s.damageMul += P.dmg;
+      s.droneAspdMul += P.aspd * 0.6;
+    },
+    init(g, rt) { rt.st.timer = rt.P.cd; rt.st.active = false; },
+    update(g, rt, dt) {
+      const P = rt.P, st = rt.st;
+      st.timer -= dt;
+      if (st.timer > 0) return;
+      st.active = !st.active;
+      st.timer = st.active ? P.dur : P.cd;
+      rt.active = st.active;
+      g.player.recalc();
+      g.initDroneRuntime();
+      if (st.active) {
+        g.showToast('OVERDRIVE', 1500);
+        g.flashScreen(0.22, this.color);
+        g.sfx.superOverclock();
+      }
+    },
+    draw(g, ctx, rt) {
+      if (!rt.st.active) return;
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = 0.16 + Math.sin(uaNow() * 9) * 0.06;
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(g.cx, g.cy, 62, 0, TAU); ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    },
+  },
+];
+
+function uaById(id) {
+  for (let i = 0; i < ULTIMATE_ARMAMENTS.length; i++) {
+    if (ULTIMATE_ARMAMENTS[i].id === id) return ULTIMATE_ARMAMENTS[i];
+  }
+  return null;
+}
+
+/** 装備中の兵装からプレイヤーステータスへの常時効果を適用する */
+function applyUaStatsToPlayer(s, entries) {
+  if (!entries || !entries.length) return;
+  for (let i = 0; i < entries.length; i++) {
+    const en = entries[i];
+    const def = uaById(en.id);
+    if (!def || !def.applyStats) continue;
+    const P = def.params(en.level, en.route);
+    def.applyStats(s, P, { active: !!en.active });
+  }
+}
+
 const SAVE_KEY = 'icd_save_v1';
 const GAME_VERSION = 'Ver 0.9.0';   // Ver1.0 リリースまでの開発版表記
 
@@ -2680,6 +3696,11 @@ class SaveManager {
       droneChips: 0,            // 【旧仕様】互換のため保持（現在は未使用）
       quantumCores: 0,          // 将来の進化・上位強化用素材
       droneIntroDone: false,    // 初回スターター配布フラグ
+      // --- Phase 5-C: 究極兵装（既存セーブは既定値で補完される） ---
+      uaLevels: {},             // { 兵装id: レベル }
+      uaRoutes: {},             // { 兵装id: 進化ルートid }
+      uaEquipped: [],           // 装備中の兵装id（最大3）
+      uaCrystals: 0,            // 兵装結晶
     };
   }
 
@@ -3049,6 +4070,10 @@ class Enemy {
     this.stunTimer = 0;      // 行動不能の残り時間
     this.chill = 0;          // 冷却の蓄積（0〜1）
     this.chillTimer = 0;
+    this.uaAmp = 0;
+    this.uaAmpTimer = 0;
+    this.uaNanoTimer = 0;
+    this.uaNanoDps = 0;
     this.freezeCd = 0;       // 凍結の再発クールダウン
     this.slowMax = 0.8;      // 減速の上限（氷属性が書き換える）
     this.frozenBonus = 1;    // 凍結中の被ダメージ倍率
@@ -3088,6 +4113,10 @@ class Enemy {
     this.stunTimer = 0;
     this.chill = 0;
     this.chillTimer = 0;
+    this.uaAmp = 0;
+    this.uaAmpTimer = 0;
+    this.uaNanoTimer = 0;
+    this.uaNanoDps = 0;
     this.freezeCd = 0;
     this.slowMax = 0.8;
     this.frozenBonus = 1;
@@ -3510,7 +4539,8 @@ class Player {
       this.game.elementState ? this.game.elementState() : null,
       this.game.equippedDrones ? this.game.equippedDrones() : null,
       this.game.droneModuleInv ? this.game.droneModuleInv() : null,
-      this.game.droneOverclockActive
+      this.game.droneOverclockActive,
+      this.game.uaStatEntries ? this.game.uaStatEntries() : null
     );
     for (let i = 0; i < UPGRADES.length; i++) {
       const u = UPGRADES[i];
@@ -5276,6 +6306,201 @@ class Gacha {
 /* =========================================================
  * AIドローン編成パネル
  * ======================================================= */
+/* =========================================================
+ * 究極兵装パネル
+ * ======================================================= */
+class UaPanel {
+  constructor(game) {
+    this.game = game;
+    this.panel = document.getElementById('ua-panel');
+    this.isOpen = false;
+    this.selected = null;
+    document.getElementById('btn-ua-close')
+      .addEventListener('click', () => this.close());
+  }
+
+  toggle() { this.isOpen ? this.close() : this.open(); }
+  open() {
+    this.game.closePanels(this);
+    this.isOpen = true;
+    this.panel.classList.remove('closed');
+    const un = this.game.uaUnlocked();
+    if (!this.selected || !this.game.uaIsUnlocked(this.selected)) {
+      const eq = this.game.uaEquippedIds();
+      this.selected = eq[0] || (un[0] ? un[0].id : null);
+    }
+    this.refresh();
+  }
+  close() {
+    this.isOpen = false;
+    this.panel.classList.add('closed');
+  }
+
+  refresh() {
+    if (!this.isOpen) return;
+    const g = this.game;
+    document.getElementById('val-ua-crystal').textContent = formatNumber(g.meta.uaCrystals || 0);
+    this.renderSlots();
+    this.renderDetail();
+    this.renderOwned();
+  }
+
+  renderSlots() {
+    const g = this.game;
+    const wrap = document.getElementById('ua-slots');
+    const max = g.uaSlotsMax();
+    const eq = g.uaEquippedIds();
+    document.getElementById('ua-slot-count').textContent = eq.length + ' / ' + max;
+    wrap.textContent = '';
+    for (let i = 0; i < max; i++) {
+      const slot = document.createElement('div');
+      slot.className = 'ua-slot';
+      const id = eq[i];
+      if (id) {
+        const def = uaById(id);
+        const cat = uaCategoryById(def.category);
+        slot.classList.add('filled');
+        slot.style.borderColor = def.color;
+        slot.innerHTML =
+          '<span class="us-icon" style="color:' + def.color + '">' + def.icon + '</span>' +
+          '<span class="us-info"><span class="us-name" style="color:' + def.color + '">' + def.name + '</span>' +
+          '<span class="us-sub"><span class="ua-cat" style="color:' + cat.color + '">' + cat.label + '</span> Lv' + g.uaLevel(id) + '</span></span>';
+        slot.addEventListener('click', () => { this.selected = id; g.sfx.buy(); this.refresh(); });
+      } else {
+        slot.classList.add('empty');
+        slot.innerHTML = '<span class="us-plus">＋</span><span class="us-name">空きスロット</span>';
+      }
+      wrap.appendChild(slot);
+    }
+    // 次の枠の解放条件
+    if (max < UA_MAX_SLOTS) {
+      const need = UA_SLOT_UNLOCK_WAVE[max];
+      const hint = document.createElement('div');
+      hint.className = 'ua-slot-hint';
+      hint.textContent = '次の装備枠は Wave ' + need + ' 到達で解放（現在の最高 Wave ' + (g.meta.bestWave || 0) + '）';
+      wrap.appendChild(hint);
+    }
+  }
+
+  renderDetail() {
+    const g = this.game;
+    const host = document.getElementById('ua-detail');
+    host.textContent = '';
+    const id = this.selected;
+    const def = id && uaById(id);
+    if (!def || !g.uaIsUnlocked(id)) {
+      host.innerHTML = '<div class="drone-empty-note">兵装を選択してください。到達Waveで新しい兵装が解放されます。</div>';
+      return;
+    }
+    const lv = g.uaLevel(id);
+    const route = g.uaRoute(id);
+    const P = def.params(lv, route);
+    const cat = uaCategoryById(def.category);
+    const equipped = g.uaEquippedIds().indexOf(id) >= 0;
+    const cost = uaUpgradeCost(lv);
+    const canUp = lv < UA_MAX_LEVEL;
+    const afford = (g.meta.uaCrystals || 0) >= cost;
+
+    const card = document.createElement('div');
+    card.className = 'ua-detail-card';
+    card.style.borderColor = def.color;
+
+    let html = '<div class="ud-head">' +
+      '<span class="ud-icon" style="color:' + def.color + '">' + def.icon + '</span>' +
+      '<span class="ud-title"><span class="ud-name" style="color:' + def.color + '">' + def.name + '</span>' +
+      '<span class="ud-sub"><span class="ua-cat" style="color:' + cat.color + '">' + cat.label + '</span> ' +
+      def.tagline + ' / Lv' + lv + ' / ' + UA_MAX_LEVEL + '</span></span>' +
+      '<button class="ud-equip' + (equipped ? ' on' : '') + '">' + (equipped ? '装備中' : '装備する') + '</button>' +
+      '</div>' +
+      '<div class="ud-desc">' + def.desc + '</div>';
+
+    // 性能
+    html += '<div class="ud-sub-title">現在の性能</div><div class="ud-stats">';
+    const rows = def.detail ? def.detail(P) : [];
+    for (let i = 0; i < rows.length; i++) html += '<div class="ud-stat">' + rows[i] + '</div>';
+    html += '</div>';
+
+    // レベルマイルストーン
+    if (def.milestones && def.milestones.length) {
+      html += '<div class="ud-sub-title">レベル特典</div><div class="ud-miles">';
+      for (let i = 0; i < def.milestones.length; i++) {
+        const m = def.milestones[i];
+        const done = lv >= m.lv;
+        html += '<div class="ud-mile' + (done ? ' done' : '') + '"><span class="udm-lv">Lv' + m.lv + '</span>' + m.text + '</div>';
+      }
+      html += '</div>';
+    }
+
+    // 進化ルート
+    if (def.routes && def.routes.length) {
+      html += '<div class="ud-sub-title">進化ルート（いつでも変更可）</div><div class="ud-routes">';
+      html += '<button class="ud-route' + (!route ? ' on' : '') + '" data-route="">標準</button>';
+      for (let i = 0; i < def.routes.length; i++) {
+        const r = def.routes[i];
+        html += '<button class="ud-route' + (route === r.id ? ' on' : '') + '" data-route="' + r.id + '">' + r.name + '</button>';
+      }
+      html += '</div>';
+      const cur = def.routes.find((r) => r.id === route);
+      html += '<div class="ud-route-desc">' + (cur ? cur.desc : 'ルートを選ぶと性能の伸び方が変わります。') + '</div>';
+    }
+
+    html += '<div class="ud-actions">';
+    if (canUp) {
+      html += '<button class="ud-upgrade' + (afford ? '' : ' disabled') + '">強化  ' + cost + ' 結晶</button>';
+    } else {
+      html += '<button class="ud-upgrade disabled">最大レベル</button>';
+    }
+    html += '</div>';
+
+    card.innerHTML = html;
+    host.appendChild(card);
+
+    card.querySelector('.ud-equip').addEventListener('click', () => { g.toggleEquipUa(id); this.refresh(); });
+    card.querySelectorAll('.ud-route').forEach((btn) => {
+      btn.addEventListener('click', () => { g.setUaRoute(id, btn.dataset.route || null); this.refresh(); });
+    });
+    const up = card.querySelector('.ud-upgrade');
+    if (up && canUp) up.addEventListener('click', () => { g.upgradeUa(id); this.refresh(); });
+  }
+
+  renderOwned() {
+    const g = this.game;
+    const wrap = document.getElementById('ua-owned');
+    wrap.textContent = '';
+    const best = g.meta.bestWave || 0;
+    const unlocked = g.uaUnlocked();
+    document.getElementById('ua-owned-count').textContent =
+      unlocked.length + ' / ' + ULTIMATE_ARMAMENTS.length;
+
+    for (let i = 0; i < ULTIMATE_ARMAMENTS.length; i++) {
+      const def = ULTIMATE_ARMAMENTS[i];
+      const open = best >= def.unlockWave;
+      const cat = uaCategoryById(def.category);
+      const card = document.createElement('button');
+      card.className = 'ua-owned-card' + (open ? '' : ' locked') + (this.selected === def.id ? ' selected' : '');
+      if (open) card.style.borderColor = def.color;
+      if (open) {
+        const eq = g.uaEquippedIds().indexOf(def.id) >= 0;
+        card.innerHTML =
+          '<span class="uo-icon" style="color:' + def.color + '">' + def.icon + '</span>' +
+          '<span class="uo-info"><span class="uo-name" style="color:' + def.color + '">' + def.name +
+          (eq ? ' <span class="do-eq">装備中</span>' : '') + '</span>' +
+          '<span class="uo-sub"><span class="ua-cat" style="color:' + cat.color + '">' + cat.label + '</span> ' +
+          def.tagline + ' / Lv' + g.uaLevel(def.id) + '</span></span>' +
+          '<span class="uo-stars">' + '★'.repeat(def.stars) + '</span>';
+        card.addEventListener('click', () => { this.selected = def.id; g.sfx.buy(); this.refresh(); });
+      } else {
+        card.innerHTML =
+          '<span class="uo-icon">？</span>' +
+          '<span class="uo-info"><span class="uo-name">？？？</span>' +
+          '<span class="uo-sub">Wave ' + def.unlockWave + ' 到達で解放</span></span>';
+        card.addEventListener('click', () => { g.sfx.deny(); g.showToast('Wave ' + def.unlockWave + ' 到達で解放されます'); });
+      }
+      wrap.appendChild(card);
+    }
+  }
+}
+
 class DronePanel {
   constructor(game) {
     this.game = game;
@@ -6649,12 +7874,13 @@ class Game {
     this.gacha = new Gacha(this);
     this.elements = new Elements(this);
     this.dronePanel = new DronePanel(this);
+    this.uaPanel = new UaPanel(this);
     this.achievements = new Achievements(this);
     this.settings = new Settings(this);
     this.panelList = [
       this.shop, this.codex, this.research, this.lab,
       this.modules, this.gacha, this.elements,
-      this.achievements, this.settings, this.dronePanel,
+      this.achievements, this.settings, this.dronePanel, this.uaPanel,
     ];
     this.bindEvents();
 
@@ -6784,8 +8010,8 @@ class Game {
       achievements: () => this.achievements.open(),
       settings: () => this.settings.open(),
       drone: () => this.dronePanel.open(),
+      ultimate: () => this.uaPanel.open(),
       // Ver1.0で実装予定
-      ultimate: () => this.showToast('Ver1.0で実装予定'),
       daily: () => this.showToast('Ver1.0で実装予定'),
     };
     document.querySelectorAll('#overlay-home [data-home]').forEach((btn) => {
@@ -7828,6 +9054,7 @@ class Game {
     else if (kind === 'frag') this.meta.fragments += 50;
     else if (kind === 'cash') this.addCash(1e9);
     else if (kind === 'quantum') this.meta.quantumCores = (this.meta.quantumCores || 0) + 5000;
+    else if (kind === 'crystal') this.addUaCrystals(5000);
     else if (kind === 'unlockAll') {
       // 全Tierを解放した状態にする（到達Wave記録を引き上げる）
       const last = UPGRADE_TIERS[UPGRADE_TIERS.length - 1].requiredWave;
@@ -7842,9 +9069,11 @@ class Game {
       this.meta.shards = 0;
       this.meta.fragments = 0;
       this.meta.quantumCores = 0;
+      this.meta.uaCrystals = 0;
     }
     // ドローン画面が開いていれば表示を更新する
     if (this.dronePanel && this.dronePanel.isOpen) this.dronePanel.refresh();
+    if (this.uaPanel && this.uaPanel.isOpen) this.uaPanel.refresh();
     this.requestSave();
     this.flushSave();
     this.hudDirty = true;
@@ -7995,6 +9224,7 @@ class Game {
     this.runOverclocks = 0;
     this.droneOverclockActive = false;
     this.initDroneRuntime();
+    this.initUaRuntime();
 
     // 開始Waveは「戦域転送」で解放した上限内で、設定から選んだ値を使う
     const startWave = Math.max(1, Math.min(this.meta.selectedStartWave, s.startWave));
@@ -8503,6 +9733,163 @@ class Game {
     this.droneAfterChange();
   }
 
+  /* ---------- 究極兵装（Phase 5-C） ---------- */
+
+  /** 到達Waveで解放済みの兵装一覧 */
+  uaUnlocked() {
+    const best = this.meta.bestWave || 0;
+    return ULTIMATE_ARMAMENTS.filter((a) => best >= a.unlockWave);
+  }
+  uaIsUnlocked(id) {
+    const a = uaById(id);
+    return !!a && (this.meta.bestWave || 0) >= a.unlockWave;
+  }
+  uaLevel(id) {
+    const lv = (this.meta.uaLevels || {})[id];
+    return (typeof lv === 'number' && lv >= 1) ? Math.min(lv, UA_MAX_LEVEL) : 1;
+  }
+  uaRoute(id) {
+    return (this.meta.uaRoutes || {})[id] || null;
+  }
+  /** 解放済みの装備枠数（到達Waveで増える） */
+  uaSlotsMax() {
+    const best = this.meta.bestWave || 0;
+    let n = 0;
+    for (let i = 0; i < UA_SLOT_UNLOCK_WAVE.length; i++) {
+      if (best >= UA_SLOT_UNLOCK_WAVE[i]) n++;
+    }
+    return Math.max(1, Math.min(UA_MAX_SLOTS, n));
+  }
+  /** 装備中の兵装id（解放済みかつ枠数以内） */
+  uaEquippedIds() {
+    const max = this.uaSlotsMax();
+    return (this.meta.uaEquipped || [])
+      .filter((id) => uaById(id) && this.uaIsUnlocked(id))
+      .slice(0, max);
+  }
+  /** ステータス計算用のエントリ（recalc から呼ばれる） */
+  uaStatEntries() {
+    const ids = this.uaEquippedIds();
+    const out = [];
+    for (let i = 0; i < ids.length; i++) {
+      const rt = this.uaRuntime ? this.uaRuntime.find((r) => r.def.id === ids[i]) : null;
+      out.push({
+        id: ids[i], level: this.uaLevel(ids[i]), route: this.uaRoute(ids[i]),
+        active: rt ? !!rt.st.active : false,
+      });
+    }
+    return out;
+  }
+
+  addUaCrystals(n) {
+    if (!n) return;
+    this.meta.uaCrystals = (this.meta.uaCrystals || 0) + n;
+    this.saveDirty = true;
+  }
+
+  /** 周回開始時に兵装の実行状態を構築する */
+  initUaRuntime() {
+    this.uaRuntime = [];
+    const ids = this.uaEquippedIds();
+    for (let i = 0; i < ids.length; i++) {
+      const def = uaById(ids[i]);
+      if (!def) continue;
+      const level = this.uaLevel(def.id);
+      const route = this.uaRoute(def.id);
+      const rt = { def, level, route, P: def.params(level, route), st: {} };
+      if (def.init) def.init(this, rt);
+      this.uaRuntime.push(rt);
+    }
+  }
+
+  updateUa(dt) {
+    const rts = this.uaRuntime;
+    if (!rts || !rts.length) return;
+    // 被ダメージ増加デバフの減衰
+    for (let i = 0; i < this.enemies.length; i++) {
+      const e = this.enemies[i];
+      if (e.uaAmpTimer > 0) {
+        e.uaAmpTimer -= dt;
+        if (e.uaAmpTimer <= 0) e.uaAmp = 0;
+      }
+    }
+    for (let i = 0; i < rts.length; i++) {
+      if (rts[i].def.update) rts[i].def.update(this, rts[i], dt);
+    }
+  }
+
+  drawUa(ctx) {
+    const rts = this.uaRuntime;
+    if (!rts || !rts.length) return;
+    for (let i = 0; i < rts.length; i++) {
+      if (rts[i].def.draw) rts[i].def.draw(this, ctx, rts[i]);
+    }
+  }
+
+  /** 敵撃破時の兵装フック */
+  uaOnKill(enemy) {
+    const rts = this.uaRuntime;
+    if (!rts || !rts.length) return;
+    for (let i = 0; i < rts.length; i++) {
+      if (rts[i].def.onKill) rts[i].def.onKill(this, rts[i], enemy);
+    }
+  }
+
+  /* ---- 兵装の管理（パネルから呼ばれる） ---- */
+
+  uaAfterChange() {
+    if (this.player) this.player.recalc();
+    this.initUaRuntime();
+    this.requestSave();
+    this.flushSave();
+    this.hudDirty = true;
+  }
+
+  toggleEquipUa(id) {
+    if (!this.uaIsUnlocked(id)) { this.sfx.deny(); return; }
+    if (!Array.isArray(this.meta.uaEquipped)) this.meta.uaEquipped = [];
+    const eq = this.meta.uaEquipped;
+    const idx = eq.indexOf(id);
+    if (idx >= 0) {
+      eq.splice(idx, 1);
+      this.sfx.buy();
+      this.uaAfterChange();
+      return;
+    }
+    if (this.uaEquippedIds().length >= this.uaSlotsMax()) {
+      this.sfx.deny();
+      this.showToast('装備枠が不足しています');
+      return;
+    }
+    eq.push(id);
+    this.sfx.buy();
+    this.uaAfterChange();
+  }
+
+  upgradeUa(id) {
+    const lv = this.uaLevel(id);
+    if (lv >= UA_MAX_LEVEL) { this.sfx.deny(); this.showToast('最大レベルです'); return false; }
+    const cost = uaUpgradeCost(lv);
+    if ((this.meta.uaCrystals || 0) < cost) {
+      this.sfx.deny();
+      this.showToast('兵装結晶が不足しています（' + cost + '）');
+      return false;
+    }
+    this.meta.uaCrystals -= cost;
+    if (!this.meta.uaLevels) this.meta.uaLevels = {};
+    this.meta.uaLevels[id] = lv + 1;
+    this.sfx.buy();
+    this.uaAfterChange();
+    return true;
+  }
+
+  setUaRoute(id, routeId) {
+    if (!this.meta.uaRoutes) this.meta.uaRoutes = {};
+    this.meta.uaRoutes[id] = routeId || null;
+    this.sfx.buy();
+    this.uaAfterChange();
+  }
+
   /** タイトル「起動する」→ 音声解放・オフライン報酬回収の上でホームへ */
   bootToHome() {
     this.hud.overlayStart.classList.add('hidden');
@@ -8624,6 +10011,7 @@ class Game {
     this.droneRuntime = [];
     if (this.droneLasers) this.droneLasers.length = 0;
     this.droneOverclockActive = false;
+    this.uaRuntime = [];
 
     this.dps = 0;
     this.dpsAccum = 0;
@@ -8781,6 +10169,10 @@ class Game {
     const frag = 1 + Math.floor(this.waveManager.wave / 250);
     this.addFragments(frag);
 
+    // 兵装結晶: ボス討伐が主な入手源（高Waveほど多い）
+    const crystals = 1 + Math.floor(this.waveManager.wave / 40);
+    this.addUaCrystals(crystals);
+
     // 「結晶探知」の抽選でGemを獲得
     if (Math.random() < this.player.stats.gemChance) {
       const amount = Math.max(1, Math.floor(this.player.stats.gemFindMul));
@@ -8891,6 +10283,7 @@ class Game {
     this.waveManager.update(dt);
     this.player.update(dt);
     this.updateDrones(dt);
+    this.updateUa(dt);
     this.updateEnemies(dt);
     this.updateProjectiles(dt);
     this.updateEnemyProjectiles(dt);
@@ -9164,6 +10557,8 @@ class Game {
     let dmg = amount * enemy.dmgTakenMul;
     // 凍結中の敵は追加ダメージを受ける（氷Lv5）
     if (enemy.stunTimer > 0 && enemy.frozenBonus > 1) dmg *= enemy.frozenBonus;
+    // 究極兵装の被ダメージ増加デバフ（EMP / 時空歪曲）
+    if (enemy.uaAmpTimer > 0 && enemy.uaAmp > 0) dmg *= 1 + enemy.uaAmp;
     if (enemy.isBoss) dmg *= this.player.stats.bossDamageMul;
     // ボスの再生シールド発動中は被ダメージを大幅に軽減
     if (enemy.bossShieldTimer > 0) dmg *= 0.15;
@@ -9217,6 +10612,7 @@ class Game {
     if (s.coinPerKill > 0) this.addCoin(s.coinPerKill);
     this.runKills++;
     this.meta.totalKills++;
+    this.uaOnKill(enemy);
     this.addElementExp(1);
     this.waveManager.killed++;
 
@@ -9626,6 +11022,7 @@ class Game {
     this.drawOrbs(ctx);
     this.drawCore(ctx);
     this.drawDrones(ctx);
+    this.drawUa(ctx);
     this.drawDamageNumbers(ctx);
 
     // SUPER OVERCLOCK 中は画面全体を染める

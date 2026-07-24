@@ -2951,3 +2951,93 @@ body.battle-enter #game-canvas { animation: battle-zoom 0.55s ease-out; }
   transition: color 0.15s, background 0.15s;
 }
 .dev-tap-target:active { color: var(--amber); background: rgba(255, 194, 51, 0.15); }
+
+/* =========================================================
+ * 究極兵装パネル — Phase 5-C
+ * ======================================================= */
+#ua-currency { font-family: var(--font-num); font-size: 13px; color: var(--magenta); display: flex; align-items: center; gap: 4px; }
+#ua-currency .dc-unit { font-size: 9px; color: var(--text-dim); letter-spacing: 1px; }
+
+.ua-cat { font-size: 9px; border: 1px solid currentColor; border-radius: 4px; padding: 0 5px; margin-right: 4px; }
+
+/* 装備スロット */
+#ua-slots { display: flex; flex-direction: column; gap: 8px; }
+.ua-slot {
+  display: flex; align-items: center; gap: 11px; min-height: 58px;
+  padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.15s;
+}
+.ua-slot.filled:hover { transform: translateY(-2px); box-shadow: 0 0 14px rgba(0,229,255,0.22); }
+.ua-slot.empty { opacity: 0.5; border-style: dashed; justify-content: center; cursor: default; }
+.us-icon { font-size: 22px; }
+.us-info { display: flex; flex-direction: column; gap: 2px; }
+.us-name { font-size: 14px; font-weight: 700; }
+.us-sub { font-size: 10px; color: var(--text-dim); }
+.us-plus { font-size: 20px; color: var(--text-dim); }
+.ua-slot-hint { font-size: 10px; color: var(--text-dim); padding: 4px 2px; line-height: 1.6; }
+
+/* 詳細カード */
+.ua-detail-card {
+  margin-top: 12px; padding: 13px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--panel);
+}
+.ud-head { display: flex; align-items: center; gap: 11px; }
+.ud-icon { font-size: 28px; }
+.ud-title { display: flex; flex-direction: column; flex: 1; gap: 2px; }
+.ud-name { font-size: 16px; font-weight: 700; }
+.ud-sub { font-size: 10px; color: var(--text-dim); }
+.ud-equip {
+  min-height: 42px; padding: 0 14px; border-radius: 7px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--cyan); color: var(--cyan); font-size: 12px;
+}
+.ud-equip.on { background: rgba(0,229,255,0.16); }
+.ud-equip:active { transform: scale(0.96); }
+.ud-desc { margin-top: 9px; font-size: 11px; color: var(--text-dim); line-height: 1.7; }
+.ud-sub-title { margin-top: 13px; font-size: 11px; letter-spacing: 1px; color: var(--cyan); }
+.ud-stats { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ud-stat {
+  font-size: 11px; color: var(--text); font-family: var(--font-num);
+  background: rgba(255,255,255,0.03); border-radius: 5px; padding: 5px 9px;
+}
+.ud-miles { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.ud-mile { font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 8px; opacity: 0.6; }
+.ud-mile.done { color: var(--green); opacity: 1; }
+.udm-lv {
+  font-family: var(--font-num); font-size: 10px;
+  border: 1px solid currentColor; border-radius: 4px; padding: 0 5px;
+}
+.ud-routes { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.ud-route {
+  min-height: 40px; padding: 6px 12px; border-radius: 7px; cursor: pointer; font-size: 12px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text);
+}
+.ud-route.on { border-color: var(--amber); color: var(--amber); background: rgba(255,194,51,0.12); }
+.ud-route:active { transform: scale(0.95); }
+.ud-route-desc { margin-top: 7px; font-size: 11px; color: var(--text-dim); line-height: 1.6; }
+.ud-actions { margin-top: 13px; }
+.ud-upgrade {
+  width: 100%; min-height: 48px; border-radius: 8px; cursor: pointer; font-size: 13px; letter-spacing: 1px;
+  background: rgba(255,45,149,0.10); border: 1px solid var(--magenta); color: var(--magenta);
+  transition: background 0.15s, transform 0.1s;
+}
+.ud-upgrade:hover { background: rgba(255,45,149,0.2); }
+.ud-upgrade:active { transform: scale(0.98); }
+.ud-upgrade.disabled { opacity: 0.45; background: var(--panel); border-color: var(--line); color: var(--text-dim); }
+
+/* 保有兵装 */
+#ua-owned { display: flex; flex-direction: column; gap: 7px; }
+.ua-owned-card {
+  display: flex; align-items: center; gap: 10px; padding: 10px 11px;
+  border: 1px solid var(--line); border-radius: 9px; background: var(--panel);
+  color: var(--text); cursor: pointer; text-align: left; min-height: 52px;
+  transition: transform 0.12s, box-shadow 0.15s;
+}
+.ua-owned-card:hover { transform: translateY(-1px); }
+.ua-owned-card.selected { box-shadow: 0 0 0 2px var(--cyan) inset; }
+.ua-owned-card.locked { opacity: 0.45; }
+.uo-icon { font-size: 20px; flex-shrink: 0; }
+.uo-info { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.uo-name { font-size: 13px; font-weight: 600; }
+.uo-sub { font-size: 10px; color: var(--text-dim); }
+.uo-stars { font-size: 9px; color: var(--amber); letter-spacing: -1px; }
