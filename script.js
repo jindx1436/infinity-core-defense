@@ -140,7 +140,6 @@ const BASE_STATS = Object.freeze({
   gravBossExecute: 0,         // 重力圧縮の即死ライン（ボス）
   gravCollapseDamage: 0,      // 重力崩壊で周囲へ与える最大HP割合ダメージ
   gravCollapseRange: 0,       // 重力崩壊の影響半径
-  gravCore: 0,                // 重力エフェクト強化（視覚演出の濃さ）
   waveSkipChance: 0,          // Waveを飛ばす確率
   omniStrikeChance: 0,        // 射程内全体攻撃の発生率
   orbRings: 1,                // オーブの軌道リング数
@@ -1650,13 +1649,11 @@ const ELEMENTS = [
     expTable: ELEMENT_EXP_TABLE,
     // pressureScale: 重圧の強さ / executeLine: 圧縮の即死ライン（Lv3で解放）
     // collapseDamage: 崩壊ダメージ（Lv4で解放）/ collapseRange: 崩壊範囲
-    // coreEffect: エフェクト強化
     baseParams: {
       pressureScale: 1.0,
       executeLine: 0,
       collapseDamage: 0,
       collapseRange: GRAVITY.collapseRange,
-      coreEffect: 1.0,
     },
     levelPerks: [
       null,
@@ -1676,16 +1673,14 @@ const ELEMENTS = [
       },
     ],
     research: [
-      { id: 'grvPressure', name: 'Gravity Pressure', k: 'pressureScale', per: 0.03,
+      { id: 'grvPressure', name: '重圧増幅', k: 'pressureScale', per: 0.03,
         maxLevel: 40, baseCost: 200, growth: 1.25, unit: '近距離ダメージ倍率' },
-      { id: 'grvCompress', name: 'Gravity Compression', k: 'executeLine', per: 0.04,
+      { id: 'grvCompress', name: '重力圧縮', k: 'executeLine', per: 0.04,
         maxLevel: 30, baseCost: 260, growth: 1.27, unit: '即死ライン' },
-      { id: 'grvCollapse', name: 'Gravity Collapse', k: 'collapseRange', per: 0.04,
+      { id: 'grvCollapse', name: '崩壊拡張', k: 'collapseRange', per: 0.04,
         maxLevel: 40, baseCost: 220, growth: 1.24, unit: '崩壊範囲' },
-      { id: 'grvCollapseDmg', name: 'Gravity Collapse Damage', k: 'collapseDamage', per: 0.05,
+      { id: 'grvCollapseDmg', name: '質量崩壊', k: 'collapseDamage', per: 0.05,
         maxLevel: 40, baseCost: 240, growth: 1.26, unit: '崩壊ダメージ' },
-      { id: 'grvCore', name: 'Gravity Core', k: 'coreEffect', per: 0.03,
-        maxLevel: 30, baseCost: 300, growth: 1.28, unit: '重力エフェクト' },
     ],
     stats(s, p, P) {
       // 圧力場を機能させるため射程をわずかに底上げ
@@ -1702,7 +1697,6 @@ const ELEMENTS = [
       // 重力崩壊
       s.gravCollapseDamage = P.collapseDamage;
       s.gravCollapseRange = P.collapseRange;
-      s.gravCore = P.coreEffect;
     },
     // 重圧：プレイヤーに近い敵ほど与ダメージが増える（主砲へ適用）
     damageMul(game, enemy, p, P) {
@@ -11336,7 +11330,6 @@ class Game {
     const gravRange = gravActive
       ? this.player.stats.range * GRAVITY.pressureRangeFactor
       : 0;
-    const gravCore = gravActive ? (this.player.stats.gravCore || 1) : 1;
 
     if (gravActive) {
       for (let i = 0; i < this.enemies.length; i++) {
@@ -11349,8 +11342,9 @@ class Game {
         if (intensity <= 0.02) continue;
         const rY = e.y + Math.sin(e.wobble) * 1.5;
         // 歪みリング（近いほど濃く・太く）
-        ctx.strokeStyle = 'rgba(165, 97, 255, ' + (0.12 + intensity * 0.55 * gravCore) + ')';
-        ctx.lineWidth = 1 + intensity * 2.5;
+        // 演出は研究に依存させず、最初から濃く出す
+        ctx.strokeStyle = 'rgba(165, 97, 255, ' + (0.18 + intensity * 0.78) + ')';
+        ctx.lineWidth = 1.4 + intensity * 3.2;
         ctx.beginPath();
         ctx.arc(e.x, rY, e.size + 5 + intensity * 8, 0, TAU);
         ctx.stroke();
