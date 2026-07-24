@@ -3041,3 +3041,29 @@ body.battle-enter #game-canvas { animation: battle-zoom 0.55s ease-out; }
 .uo-name { font-size: 13px; font-weight: 600; }
 .uo-sub { font-size: 10px; color: var(--text-dim); }
 .uo-stars { font-size: 9px; color: var(--amber); letter-spacing: -1px; }
+
+/* ドローン: OS効果・モジュール効果の数値表示 */
+.dd-mul-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.dd-mul {
+  font-family: var(--font-num); font-size: 10px; color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px;
+}
+.dd-mul.total { color: var(--amber); border-color: var(--amber); }
+.dd-effects { display: flex; flex-direction: column; gap: 4px; margin-top: 7px; }
+.dd-effect {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  background: rgba(255,255,255,0.03); border-radius: 5px; padding: 5px 9px;
+}
+.de-k { font-size: 11px; color: var(--text-dim); }
+.de-v { font-family: var(--font-num); font-size: 12px; color: var(--green); }
+.dd-next { margin-top: 6px; font-size: 10px; color: var(--cyan); line-height: 1.6; opacity: 0.85; }
+
+.dd-mod.filled { flex-direction: column; align-items: flex-start; gap: 2px; padding: 7px 10px; }
+.ddm-main { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.ddm-eff { font-size: 9px; color: var(--green); }
+
+.dm-head { display: flex; align-items: baseline; gap: 7px; }
+.dm-mul { font-family: var(--font-num); font-size: 10px; color: var(--amber); }
+.dm-eff { font-size: 11px; color: var(--green); }
+.dmg-text { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 0; }
+.dmg-desc { font-size: 9px; color: var(--text-dim); }

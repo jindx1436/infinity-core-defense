@@ -343,12 +343,26 @@ function bossPatternsFor(bossKills) {
 /** Waveスケーリング規則 */
 const WAVE_RULES = Object.freeze({
   enemyCount: (w) => Math.min(6 + Math.floor(w * 1.4), 55),
-  hpMul: (w) =>
-    Math.pow(1.10, w - 1) * (w > 100 ? Math.pow(1.02, w - 100) : 1),
-  atkMul: (w) =>
-    Math.pow(1.055, w - 1) * (w > 100 ? Math.pow(1.01, w - 100) : 1),
+
+  // 敵HP: 序盤5.5%/Wave、Wave100以降は3.0%/Waveへ緩やか化する。
+  // 1500Waveまで到達可能な範囲へ収めるため、青天井の複利を避けている。
+  hpMul: (w) => (w <= 100
+    ? Math.pow(1.055, w - 1)
+    : Math.pow(1.055, 99) * Math.pow(1.030, w - 100)),
+
+  // 敵攻撃力: HPより緩やかに伸ばす。プレイヤーHPが追いつける範囲を保つ。
+  atkMul: (w) => (w <= 100
+    ? Math.pow(1.035, w - 1)
+    : Math.pow(1.035, 99) * Math.pow(1.022, w - 100)),
+
   speedMul: (w) => Math.min(1 + (w - 1) * 0.008, 2.4),
-  cashMul: (w) => 1 + (w - 1) * 0.15,
+
+  // 報酬: 敵HPと同じ伸び方にする。ここが線形だと強化費用（指数）に
+  // 追いつけず、深いWaveで経済が破綻するため必ずHPと揃える。
+  cashMul: (w) => (w <= 100
+    ? Math.pow(1.055, w - 1)
+    : Math.pow(1.055, 99) * Math.pow(1.030, w - 100)),
+
   spawnInterval: (w) => Math.max(0.85 - w * 0.012, 0.16),
   isBossWave: (w) => w % CONFIG.BOSS_INTERVAL === 0,
 });
@@ -387,10 +401,10 @@ const UPGRADES = [
   {
     id: 'damage', name: 'Damage', category: 'attack',
     tier: 1,
-    level: 0, maxLevel: 6000, baseCost: 8, growth: 1.08,
-    description: '攻撃力が増加',
-    effect(s, lv) { s.damage += lv * 2; },
-    valueText: (lv) => '+' + formatNumber(lv * 2),
+    level: 0, maxLevel: 6000, baseCost: 8, growth: 1.07,
+    description: '攻撃力が増加（1レベルごとに +6%）',
+    effect(s, lv) { s.damage *= Math.pow(1.06, lv); },
+    valueText: (lv) => '×' + formatNumber(Math.pow(1.06, lv)),
   },
   {
     id: 'attackSpeed', name: 'Attack Speed', category: 'attack',
@@ -525,10 +539,10 @@ const UPGRADES = [
   {
     id: 'health', name: 'Health', category: 'defense',
     tier: 1,
-    level: 0, maxLevel: 2000, baseCost: 12, growth: 1.10,
-    description: '最大HPが増加',
-    effect(s, lv) { s.maxHp += lv * 20; },
-    valueText: (lv) => formatNumber(100 + lv * 20),
+    level: 0, maxLevel: 2000, baseCost: 12, growth: 1.075,
+    description: '最大HPが増加（1レベルごとに +5.5%）',
+    effect(s, lv) { s.maxHp *= Math.pow(1.055, lv); },
+    valueText: (lv) => formatNumber(100 * Math.pow(1.055, lv)),
   },
   {
     id: 'healthRegen', name: 'Health Regen', category: 'defense',
@@ -541,10 +555,10 @@ const UPGRADES = [
   {
     id: 'defense', name: 'Defense', category: 'defense',
     tier: 1,
-    level: 0, maxLevel: 500, baseCost: 60, growth: 1.16,
+    level: 0, maxLevel: 500, baseCost: 60, growth: 1.14,
     description: '被ダメージを軽減',
-    effect(s, lv) { s.defense += lv; },
-    valueText: (lv) => '-' + formatNumber(lv),
+    effect(s, lv) { s.defense += Math.round(4 * (Math.pow(1.055, lv) - 1) / 0.055); },
+    valueText: (lv) => '-' + formatNumber(Math.round(4 * (Math.pow(1.055, lv) - 1) / 0.055)),
   },
   {
     id: 'orbCount', name: 'Orb', category: 'defense',
@@ -1939,6 +1953,17 @@ const DRONE_OS = [
       };
     },
     levelText: (lv) => '攻撃力/攻撃速度/射程 上昇',
+    /** 現在のレベル・レアリティでの実数値（攻撃OSはドローン自身の性能） */
+    preview(lv, k, s) {
+      const c = this.combat(lv, s || BASE_STATS);
+      const gain = k;   // レア倍率×研究×熟練
+      return [
+        ['ドローン攻撃力', (c.damage * gain * ((s && s.droneDamageMul) || 1)).toFixed(1)],
+        ['ドローン攻撃速度', (1 / (c.interval / ((s && s.droneAspdMul) || 1))).toFixed(2) + ' 回/秒'],
+        ['ドローン射程', Math.round(c.range + ((s && s.droneRangeBonus) || 0))],
+        ['ドローンクリ率', ((c.crit + ((s && s.droneCritChance) || 0)) * 100).toFixed(1) + '%'],
+      ];
+    },
   },
   {
     id: 'os_support', name: '支援OS', role: 'support', icon: '✚', color: '#3dff9e',
@@ -1950,6 +1975,13 @@ const DRONE_OS = [
       s.critChance += 0.02 * k;
     },
     levelText: (lv) => 'Pの攻撃速度/攻撃力/クリ率 上昇',
+    preview(lv, k) {
+      return [
+        ['プレイヤー攻撃速度', '+' + (6 * k).toFixed(1) + '%'],
+        ['プレイヤー攻撃力', '+' + (5 * k).toFixed(1) + '%'],
+        ['クリティカル率', '+' + (2 * k).toFixed(1) + '%'],
+      ];
+    },
   },
   {
     id: 'os_repair', name: '修復OS', role: 'repair', icon: '❤', color: '#ff6b8f',
@@ -1960,6 +1992,12 @@ const DRONE_OS = [
       s._droneRepair = (s._droneRepair || 0) + k;   // 間隔バースト回復の規模
     },
     levelText: (lv) => 'HP回復量/間隔/緊急修復 上昇',
+    preview(lv, k) {
+      return [
+        ['HP自動回復', '+' + (1.6 * k).toFixed(1) + ' /秒'],
+        ['間欠回復', '最大HPの ' + (2).toFixed(0) + '% + 10 × ' + k.toFixed(2)],
+      ];
+    },
   },
   {
     id: 'os_analysis', name: '解析OS', role: 'analysis', icon: '◎', color: '#7fd8ff',
@@ -1971,6 +2009,13 @@ const DRONE_OS = [
       s.critChance += 0.03 * k;
     },
     levelText: (lv) => 'ボス/エリート与ダメ・クリ率 上昇',
+    preview(lv, k) {
+      return [
+        ['ボスへの与ダメージ', '+' + (8 * k).toFixed(1) + '%'],
+        ['エリートへの与ダメージ', '+' + (8 * k).toFixed(1) + '%'],
+        ['クリティカル率', '+' + (3 * k).toFixed(1) + '%'],
+      ];
+    },
   },
   {
     id: 'os_economy', name: '経済OS', role: 'economy', icon: '$', color: '#ffc233',
@@ -1985,6 +2030,14 @@ const DRONE_OS = [
       s.gemFindMul += Math.min(0.03 * k, 0.30);               // Gemは控えめ＆上限
     },
     levelText: (lv) => 'Coin/Cash/量子コア/Gem 上昇',
+    preview(lv, k) {
+      return [
+        ['Coin獲得', '+' + (8 * k).toFixed(1) + '%'],
+        ['Cash獲得', '+' + (12 * k).toFixed(1) + '%'],
+        ['量子コア獲得', '+' + (6 * k).toFixed(1) + '%'],
+        ['Gem獲得', '+' + Math.min(3 * k, 30).toFixed(1) + '%（上限30%）'],
+      ];
+    },
   },
 ];
 function droneOsById(id) {
@@ -1998,25 +2051,25 @@ function droneOsById(id) {
  */
 const DRONE_MODULES = [
   { id: 'dm_laser', name: 'レーザーユニット', slot: 'attack', color: '#ff3b6b',
-    desc: '攻撃OSの攻撃力上昇', combat(c, p) { c.damage *= 1 + 0.18 * p; } },
+    desc: '攻撃OSの攻撃力上昇', text: (p) => '攻撃OSの攻撃力 +' + (18 * p).toFixed(0) + '%', combat(c, p) { c.damage *= 1 + 0.18 * p; } },
   { id: 'dm_accel', name: '高速演算装置', slot: 'attack', color: '#ff7a3d',
-    desc: '攻撃OSの攻撃速度上昇', combat(c, p) { c.interval /= 1 + 0.12 * p; } },
+    desc: '攻撃OSの攻撃速度上昇', text: (p) => '攻撃OSの攻撃速度 +' + (12 * p).toFixed(0) + '%', combat(c, p) { c.interval /= 1 + 0.12 * p; } },
   { id: 'dm_sensor', name: '高性能センサー', slot: 'attack', color: '#7fd8ff',
-    desc: '攻撃OSの射程とクリ率上昇', combat(c, p) { c.range += 40 * p; c.crit += 0.05 * p; } },
+    desc: '攻撃OSの射程とクリ率上昇', text: (p) => '攻撃OSの射程 +' + (40 * p).toFixed(0) + ' / クリ率 +' + (5 * p).toFixed(1) + '%', combat(c, p) { c.range += 40 * p; c.crit += 0.05 * p; } },
   { id: 'dm_repair', name: '修復ユニット', slot: 'support', color: '#ff6b8f',
-    desc: 'HP自動回復を付与', passive(s, p) { s.hpRegen += 2.2 * p; } },
+    desc: 'HP自動回復を付与', text: (p) => 'HP自動回復 +' + (2.2 * p).toFixed(1) + ' /秒', passive(s, p) { s.hpRegen += 2.2 * p; } },
   { id: 'dm_amp', name: '出力増幅器', slot: 'support', color: '#3dff9e',
-    desc: 'プレイヤー攻撃力を上昇', passive(s, p) { s.damageMul += 0.04 * p; } },
+    desc: 'プレイヤー攻撃力を上昇', text: (p) => 'プレイヤー攻撃力 +' + (4 * p).toFixed(1) + '%', passive(s, p) { s.damageMul += 0.04 * p; } },
   { id: 'dm_battery', name: '量子バッテリー', slot: 'economy', color: '#ffc233',
-    desc: 'Coin獲得を上昇', passive(s, p) { s.coinBonus += 0.06 * p; } },
+    desc: 'Coin獲得を上昇', text: (p) => 'Coin獲得 +' + (6 * p).toFixed(1) + '%', passive(s, p) { s.coinBonus += 0.06 * p; } },
   { id: 'dm_shield', name: 'シールド発生装置', slot: 'util', color: '#00e5ff',
-    desc: '防御力と最大HPを上昇', passive(s, p) { s.defense += 8 * p; s.hpMul += 0.04 * p; } },
+    desc: '防御力と最大HPを上昇', text: (p) => '防御力 +' + (8 * p).toFixed(0) + ' / 最大HP +' + (4 * p).toFixed(1) + '%', passive(s, p) { s.defense += 8 * p; s.hpMul += 0.04 * p; } },
   { id: 'dm_proc', name: '高性能プロセッサ', slot: 'util', color: '#a561ff',
-    desc: 'クリティカル率を上昇', passive(s, p) { s.critChance += 0.02 * p; } },
+    desc: 'クリティカル率を上昇', text: (p) => 'クリティカル率 +' + (2 * p).toFixed(1) + '%', passive(s, p) { s.critChance += 0.02 * p; } },
   { id: 'dm_link', name: '量子リンク', slot: 'economy', color: '#3dff9e',
-    desc: '量子コア獲得を上昇', passive(s, p) { s.quantumFindMul += 0.10 * p; } },
+    desc: '量子コア獲得を上昇', text: (p) => '量子コア獲得 +' + (10 * p).toFixed(0) + '%', passive(s, p) { s.quantumFindMul += 0.10 * p; } },
   { id: 'dm_targeter', name: '照準補正器', slot: 'attack', color: '#ffe14d',
-    desc: '攻撃OSのクリ率上昇', combat(c, p) { c.crit += 0.06 * p; } },
+    desc: '攻撃OSのクリ率上昇', text: (p) => '攻撃OSのクリ率 +' + (6 * p).toFixed(1) + '%', combat(c, p) { c.crit += 0.06 * p; } },
 ];
 function droneModuleById(id) {
   for (let i = 0; i < DRONE_MODULES.length; i++) if (DRONE_MODULES[i].id === id) return DRONE_MODULES[i];
@@ -2380,7 +2433,7 @@ function formatNumber(n) {
   if (n < 1000) {
     return Number.isInteger(n) ? n.toString() : n.toFixed(1);
   }
-  const units = ['K', 'M', 'B', 'T', 'q', 'Q', 's', 'S'];
+  const units = ['K', 'M', 'B', 'T', 'q', 'Q', 's', 'S', 'O', 'N', 'd', 'U', 'D'];
   let u = -1;
   let v = n;
   while (v >= 1000 && u < units.length - 1) {
@@ -2761,7 +2814,7 @@ const ULTIMATE_ARMAMENTS = [
             if (e.hp <= 0) continue;
             if (uaSegDist(e.x, e.y, b.x1, b.y1, b.x2, b.y2) <= half + e.size * 0.5) {
               const mul = e.isBoss ? P.bossMul : 1;
-              g.damageEnemy(e, dmgPerTick * mul, 0, false);
+              g.uaHit(e, dmgPerTick * mul, 0, false);
             }
           }
         }
@@ -2940,7 +2993,7 @@ const ULTIMATE_ARMAMENTS = [
         e.chill = Math.min(e.chill + P.slow * rate, e.slowMax || 0.8);
         e.chillTimer = Math.max(e.chillTimer, 2.2);
         if (P.amp > 0) { e.uaAmp = P.amp * rate; e.uaAmpTimer = P.stun * rate + 1.5; }
-        g.damageEnemy(e, dmg * rate, 0, false);
+        g.uaHit(e, dmg * rate, 0, true);
       }
       g.spawnShockwave(g.cx, g.cy, P.radius, this.color);
       g.flashScreen(0.16, this.color);
@@ -3022,7 +3075,7 @@ const ULTIMATE_ARMAMENTS = [
           e.x += (dx / d) * P.push * rate;
           e.y += (dy / d) * P.push * rate;
         }
-        g.damageEnemy(e, dmg, 0, false);
+        g.uaHit(e, dmg, 0, true);
         g.spawnParticles(e.x, e.y, 3, 120, 0.3, 2, this.color);
       }
       g.spawnShockwave(g.cx, g.cy, P.radius, this.color);
@@ -3106,7 +3159,7 @@ const ULTIMATE_ARMAMENTS = [
           const e = g.enemies[j];
           if (e.hp <= 0) continue;
           if (uaSegDist(e.x, e.y, x1, y1, x2, y2) <= half + e.size * 0.5) {
-            g.damageEnemy(e, dmg, 1, true);
+            g.uaHit(e, dmg, 1, true);
           }
         }
       }
@@ -3222,7 +3275,7 @@ const ULTIMATE_ARMAMENTS = [
         const e = g.enemies[i];
         if (e.hp <= 0) continue;
         const dx = e.x - x, dy = e.y - y;
-        if (dx * dx + dy * dy <= P.radius * P.radius) g.damageEnemy(e, dmg, 0, false);
+        if (dx * dx + dy * dy <= P.radius * P.radius) g.uaHit(e, dmg, 0, true);
       }
       g.spawnShockwave(x, y, P.radius, this.color);
       g.spawnParticles(x, y, 8, 150, 0.35, 3, this.color);
@@ -3300,7 +3353,7 @@ const ULTIMATE_ARMAMENTS = [
         if (e.hp <= 0 || !e.uaNanoTimer || e.uaNanoTimer <= 0) continue;
         e.uaNanoTimer -= dt;
         if (doTick) {
-          g.damageEnemy(e, (e.uaNanoDps || 0) * 0.25, 0, false);
+          g.uaHit(e, (e.uaNanoDps || 0) * 0.25, 0, false);
           if (Math.random() < 0.4) g.spawnParticles(e.x, e.y, 1, 40, 0.35, 2, this.color);
         }
       }
@@ -3325,7 +3378,7 @@ const ULTIMATE_ARMAMENTS = [
           const e = g.enemies[i];
           if (e.hp <= 0) continue;
           const dx = e.x - enemy.x, dy = e.y - enemy.y;
-          if (dx * dx + dy * dy <= 90 * 90) g.damageEnemy(e, dmg, 0, false);
+          if (dx * dx + dy * dy <= 90 * 90) g.uaHit(e, dmg, 0, true);
         }
         g.spawnShockwave(enemy.x, enemy.y, 90, this.color);
       }
@@ -6680,6 +6733,37 @@ class DronePanel {
     html += '</div>';
     html += '<div class="dd-os-desc">' + droneOsById(d.os).desc + '</div>';
 
+    // --- OS効果の実数値（レアリティ倍率・Lv倍率・研究を反映） ---
+    const st = g.player ? g.player.stats : BASE_STATS;
+    const os = droneOsById(d.os);
+    const rarMul = droneRarityMul(d.rarity);
+    const lvMul = droneLevelFactor(d.level);
+    const resMul = (st.droneOsMul || 1) * (1 + (st.droneMastery || 0));
+    const k = rarMul * lvMul * resMul;
+    html += '<div class="dd-sub-title">OS効果（現在値）</div>';
+    html += '<div class="dd-mul-row">' +
+      '<span class="dd-mul">' + rar.name + ' ×' + rarMul.toFixed(2) + '</span>' +
+      '<span class="dd-mul">Lv' + d.level + ' ×' + lvMul.toFixed(2) + '</span>' +
+      '<span class="dd-mul">研究 ×' + resMul.toFixed(2) + '</span>' +
+      '<span class="dd-mul total">合計 ×' + k.toFixed(2) + '</span>' +
+      '</div>';
+    if (os && os.preview) {
+      const rows = os.preview(d.level, k, st);
+      html += '<div class="dd-effects">';
+      for (let i = 0; i < rows.length; i++) {
+        html += '<div class="dd-effect"><span class="de-k">' + rows[i][0] +
+          '</span><span class="de-v">' + rows[i][1] + '</span></div>';
+      }
+      html += '</div>';
+      // 次のレベルでの伸びを示す
+      if (d.level < DRONE_MAX_LEVEL) {
+        const k2 = rarMul * droneLevelFactor(d.level + 1) * resMul;
+        const next = os.preview(d.level + 1, k2, st);
+        html += '<div class="dd-next">次のLv: ' +
+          next.map((r, i) => r[0] + ' → ' + r[1]).join(' / ') + '</div>';
+      }
+    }
+
     // モジュール枠
     html += '<div class="dd-sub-title">モジュール枠 (' + d.modules.length + '/' + slots + ')</div>';
     html += '<div class="dd-mod-row">';
@@ -6689,8 +6773,11 @@ class DronePanel {
         const inst = g.droneModuleInstById(muid);
         const bp = inst && droneModuleById(inst.bp);
         const mr = inst && rarityById(inst.rarity);
+        const mp = inst ? droneRarityMul(inst.rarity) : 1;
         html += '<button class="dd-mod filled" data-unequip="' + muid + '" style="border-color:' +
-          (mr ? mr.color : '#888') + '">' + (bp ? bp.name : '?') + '<span class="dd-mod-x">✕</span></button>';
+          (mr ? mr.color : '#888') + '"><span class="ddm-main">' + (bp ? bp.name : '?') +
+          '<span class="dd-mod-x">✕</span></span>' +
+          (bp && bp.text ? '<span class="ddm-eff">' + bp.text(mp) + '</span>' : '') + '</button>';
       } else {
         html += '<div class="dd-mod empty">空き枠</div>';
       }
@@ -6805,7 +6892,8 @@ class DronePanel {
       head.className = 'dmod-group-head' + (isOpen ? ' open' : '');
       head.innerHTML =
         '<span class="dmg-arrow">' + (isOpen ? '▼' : '▶') + '</span>' +
-        '<span class="dmg-name" style="color:' + bp.color + '">' + bp.name + '</span>' +
+        '<span class="dmg-text"><span class="dmg-name" style="color:' + bp.color + '">' + bp.name +
+        '</span><span class="dmg-desc">' + bp.desc + '</span></span>' +
         '<span class="dmg-count">' + list.length + '</span>';
       head.addEventListener('click', () => {
         this.openModuleGroups[bp.id] = !isOpen;
@@ -6824,9 +6912,11 @@ class DronePanel {
           const card = document.createElement('button');
           card.className = 'drone-mod-card' + (isEq ? ' equipped' : '');
           card.style.borderColor = rar.color;
+          const mp = droneRarityMul(inst.rarity);
           card.innerHTML =
-            '<span class="dm-name" style="color:' + rar.color + '">' + rar.name + '</span>' +
-            '<span class="dm-desc">' + bp.desc + '</span>' +
+            '<span class="dm-head"><span class="dm-name" style="color:' + rar.color + '">' +
+            rar.name + '</span><span class="dm-mul">×' + mp.toFixed(2) + '</span></span>' +
+            '<span class="dm-eff">' + (bp.text ? bp.text(mp) : bp.desc) + '</span>' +
             '<span class="dm-tag">' + (isEq ? '装備中' : (d ? 'タップで装備' : 'ドローンを選択')) + '</span>';
           card.addEventListener('click', () => {
             if (isEq) { g.showToast('既に装備中です'); return; }
@@ -9816,6 +9906,7 @@ class Game {
     for (let i = 0; i < rts.length; i++) {
       if (rts[i].def.update) rts[i].def.update(this, rts[i], dt);
     }
+    this.flushUaDamage(dt);
   }
 
   drawUa(ctx) {
@@ -9824,6 +9915,39 @@ class Game {
     for (let i = 0; i < rts.length; i++) {
       if (rts[i].def.draw) rts[i].def.draw(this, ctx, rts[i]);
     }
+  }
+
+  /**
+   * 兵装のダメージ適用。
+   * instant=true は単発ヒット（即座に数字を出す）。
+   * instant=false は継続ダメージ（0.25秒ごとに合算して1つの数字にまとめる）。
+   * レーザーの毎ティック表示は数字が洪水になるため、必ず合算する。
+   */
+  uaHit(enemy, amount, critTier, instant) {
+    const dealt = this.damageEnemy(enemy, amount, critTier, !!instant);
+    if (!instant && dealt > 0) {
+      if (!this._uaAcc) this._uaAcc = new Map();
+      this._uaAcc.set(enemy, (this._uaAcc.get(enemy) || 0) + dealt);
+    }
+    return dealt;
+  }
+
+  /** 合算した継続ダメージをまとめて数字表示する */
+  flushUaDamage(dt) {
+    this._uaAccTimer = (this._uaAccTimer || 0) - dt;
+    if (this._uaAccTimer > 0) return;
+    this._uaAccTimer = 0.25;
+    const acc = this._uaAcc;
+    if (!acc || acc.size === 0) return;
+    if (this.meta.showDamage !== false) {
+      acc.forEach((dmg, e) => {
+        if (dmg <= 0) return;
+        const d = this.damageNumberPool.acquire();
+        d.init(e.x, e.y - e.size, dmg, 0);
+        this.damageNumbers.push(d);
+      });
+    }
+    acc.clear();
   }
 
   /** 敵撃破時の兵装フック */
@@ -10597,6 +10721,7 @@ class Game {
     }
 
     if (enemy.hp <= 0) this.killEnemy(enemy);
+    return dmg;
   }
 
   killEnemy(enemy) {
